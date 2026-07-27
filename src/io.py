@@ -5,16 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from collections import Counter
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
-from datasets import (
-    Dataset,
-    get_dataset_config_names,
-    get_dataset_split_names,
-    load_dataset,
-    load_from_disk,
-)
+from datasets import Dataset, load_dataset, load_from_disk
 
 logger = logging.getLogger(__name__)
 
@@ -32,34 +29,147 @@ def mount_google_drive() -> None:
         drive.mount("/content/drive")
 
 
-def sample_directory(output_root: str | Path) -> Path:
-    """Return the directory used for the latest generated sample."""
-    return Path(output_root) / "current"
+def sample_directory(output_root: str | Path, subset_name: str = "current") -> Path:
+    """Return the output directory for one named sample or subset."""
+    return Path(output_root) / subset_name
 
 
-def inspect_and_load_dataset(
-    dataset_name: str,
-    config: str,
-    split: str,
-):
-    """Inspect the source schema and load the requested Hugging Face split."""
-    logger.info("Inspecting dataset configuration")
-    configs = get_dataset_config_names(dataset_name)
-    splits = get_dataset_split_names(dataset_name, config)
-    logger.info("Available configs: %s", configs)
-    logger.info("Available splits: %s", splits)
+def _read_json(source: str | Path) -> dict[str, Any]:
+    """Read JSON from a local path or an HTTP(S) URL."""
+    source = str(source)
+    if urlparse(source).scheme in {"http", "https"}:
+        logger.info("Downloading BioASQ question metadata from %s", source)
+        with urlopen(source, timeout=180) as response:
+            return json.load(response)
+    return json.loads(Path(source).read_text(encoding="utf-8"))
 
-    dataset = load_dataset(dataset_name, config, split=split)
-    required_columns = {"_id", "title", "text", "query"}
+
+def _pubmed_id(document_reference: str) -> str:
+    """Extract a PubMed identifier from a BioASQ document URL."""
+    return str(document_reference).rstrip("/").rsplit("/", maxsplit=1)[-1]
+
+
+def load_bioasq_questions(
+    questions_source: str | Path,
+) -> tuple[dict[str, str], dict[str, set[str]], dict[str, str]]:
+    """Load expert-authored questions, types, and gold PubMed documents."""
+    payload = _read_json(questions_source)
+    questions_data = payload.get("questions")
+    if not isinstance(questions_data, list):
+        raise ValueError("BioASQ JSON must contain a 'questions' list")
+
+    queries: dict[str, str] = {}
+    relevant_docs: dict[str, set[str]] = {}
+    query_types: dict[str, str] = {}
+
+    for question in questions_data:
+        qid = str(question["id"])
+        body = str(question["body"]).strip()
+        question_type = str(question["type"]).lower()
+        document_ids = {
+            _pubmed_id(reference) for reference in question.get("documents", [])
+        }
+        if not body:
+            raise ValueError(f"Question {qid} has an empty body")
+        if not document_ids:
+            raise ValueError(f"Question {qid} has no gold documents")
+
+        queries[qid] = body
+        relevant_docs[qid] = document_ids
+        query_types[qid] = question_type
+
+    if not (set(queries) == set(relevant_docs) == set(query_types)):
+        raise ValueError("Question, relevance, and type identifiers differ")
+
+    logger.info(
+        "Loaded %d expert questions with type counts %s",
+        len(queries),
+        dict(sorted(Counter(query_types.values()).items())),
+    )
+    return queries, relevant_docs, query_types
+
+
+def load_bioasq_benchmark(
+    corpus_dataset_name: str,
+    corpus_config: str,
+    corpus_split: str,
+    questions_source: str | Path,
+) -> tuple[
+    dict[str, str],
+    dict[str, set[str]],
+    dict[str, str],
+    dict[str, str],
+    dict[str, Any],
+]:
+    """Load BioASQ questions and a corpus containing their PubMed abstracts."""
+    from tqdm.auto import tqdm
+
+    logger.info(
+        "Loading corpus %s/%s[%s]",
+        corpus_dataset_name,
+        corpus_config,
+        corpus_split,
+    )
+    dataset = load_dataset(
+        corpus_dataset_name,
+        corpus_config,
+        split=corpus_split,
+    )
+    required_columns = {"id", "title", "text"}
     missing_columns = required_columns.difference(dataset.column_names)
     if missing_columns:
         raise ValueError(
-            f"Dataset schema changed; missing columns: {sorted(missing_columns)}"
+            f"Corpus schema changed; missing columns: {sorted(missing_columns)}"
         )
 
-    logger.info("Rows: %d", len(dataset))
-    logger.info("Columns: %s", dataset.column_names)
-    return dataset
+    corpus: dict[str, str] = {}
+    for row in tqdm(dataset, total=len(dataset), desc="Loading corpus", unit="doc"):
+        doc_id = str(row["id"])
+        title = (row["title"] or "").strip()
+        text = (row["text"] or "").strip()
+        document = f"{title}\n{text}".strip() if title else text
+        if document:
+            corpus[doc_id] = document
+
+    queries, relevant_docs, query_types = load_bioasq_questions(questions_source)
+    complete_ids = {
+        qid
+        for qid, document_ids in relevant_docs.items()
+        if document_ids.issubset(corpus)
+    }
+    excluded_ids = set(queries).difference(complete_ids)
+    if excluded_ids:
+        logger.warning(
+            "Excluding %d questions with at least one missing gold document",
+            len(excluded_ids),
+        )
+
+    queries = {qid: queries[qid] for qid in queries if qid in complete_ids}
+    relevant_docs = {
+        qid: relevant_docs[qid] for qid in relevant_docs if qid in complete_ids
+    }
+    query_types = {
+        qid: query_types[qid] for qid in query_types if qid in complete_ids
+    }
+    source_metadata = {
+        "corpus_dataset_name": corpus_dataset_name,
+        "corpus_config": corpus_config,
+        "corpus_split": corpus_split,
+        "questions_source": str(questions_source),
+        "n_source_questions": len(complete_ids) + len(excluded_ids),
+        "n_complete_questions": len(complete_ids),
+        "n_excluded_incomplete_questions": len(excluded_ids),
+        "n_source_corpus_docs": len(corpus),
+        "complete_question_type_counts": dict(
+            sorted(Counter(query_types.values()).items())
+        ),
+    }
+    logger.info(
+        "Benchmark ready: %d complete questions and %d corpus documents",
+        len(queries),
+        len(corpus),
+    )
+    return queries, relevant_docs, query_types, corpus, source_metadata
 
 
 def load_bioasq_sample(
@@ -81,6 +191,8 @@ def load_bioasq_sample(
 
     if set(queries) != set(relevant_docs):
         raise ValueError("Query IDs and relevance IDs differ")
+    if "query_types" in metadata and set(metadata["query_types"]) != set(queries):
+        raise ValueError("Stored query-type IDs differ from query IDs")
     positive_ids = set().union(*relevant_docs.values())
     if not positive_ids.issubset(corpus):
         raise ValueError("At least one positive document is missing")
