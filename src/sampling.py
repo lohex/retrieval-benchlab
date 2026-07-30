@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection, Set
 
+import numpy as np
 from tqdm.auto import tqdm
 
 logger = logging.getLogger(__name__)
 
 VALID_QUESTION_TYPES = {"yesno", "factoid", "list", "summary"}
 VALID_DOCUMENT_FILTERS = {"all", "one", "multiple"}
+RETRIEVAL_QUESTION_TYPES = frozenset({"list", "factoid", "summary"})
 
 
 def _normalise_question_type(question_type: str | None) -> str | None:
@@ -65,7 +68,7 @@ def sample_queries_and_positives(
     relevant_docs: dict[str, set[str]],
     query_types: dict[str, str],
     n_queries: int | None,
-    rng,
+    rng: np.random.Generator,
     question_type: str | None = None,
     documents: str = "all",
 ) -> tuple[
@@ -121,27 +124,104 @@ def sample_queries_and_positives(
     )
 
 
+def sample_calibration_documents(
+    source_corpus: dict[str, str],
+    relevant_docs: dict[str, set[str]],
+    query_types: dict[str, str],
+    n_documents: int,
+    rng: np.random.Generator,
+    protected_question_types: Collection[str] = RETRIEVAL_QUESTION_TYPES,
+) -> dict[str, str]:
+    """Sample documents that are not relevant to protected question types."""
+    if n_documents <= 0:
+        raise ValueError("n_documents must be positive")
+    if set(relevant_docs) != set(query_types):
+        raise ValueError("Relevance and question-type identifiers differ")
+
+    normalized_types = {
+        _normalise_question_type(question_type)
+        for question_type in protected_question_types
+    }
+    normalized_types.discard(None)
+    if not normalized_types:
+        raise ValueError("protected_question_types must not be empty")
+
+    protected_document_ids = set().union(
+        *(
+            relevant_docs[query_id]
+            for query_id, question_type in query_types.items()
+            if question_type in normalized_types
+        )
+    )
+    candidate_ids = sorted(
+        set(source_corpus).difference(protected_document_ids)
+    )
+    if n_documents > len(candidate_ids):
+        raise ValueError(
+            f"Requested {n_documents} calibration documents, but only "
+            f"{len(candidate_ids)} non-relevant candidates are available"
+        )
+
+    selected_ids = rng.choice(
+        candidate_ids,
+        size=n_documents,
+        replace=False,
+    ).tolist()
+    calibration_corpus = {
+        document_id: source_corpus[document_id]
+        for document_id in tqdm(
+            selected_ids,
+            desc="Building calibration set",
+            unit="doc",
+        )
+    }
+    logger.info(
+        "Built calibration set with %d documents, excluding %d documents "
+        "relevant to question types %s",
+        len(calibration_corpus),
+        len(protected_document_ids),
+        sorted(normalized_types),
+    )
+    return calibration_corpus
+
+
 def add_random_negative_documents(
     source_corpus: dict[str, str],
     relevant_docs: dict[str, set[str]],
     target_size: int,
-    rng,
+    rng: np.random.Generator,
+    excluded_document_ids: Set[str] | None = None,
 ) -> dict[str, str]:
-    """Build a corpus containing every positive and random negative documents."""
+    """Build a corpus with all positives and non-excluded random negatives."""
     if target_size <= 0:
         raise ValueError("target_size must be positive")
     positive_ids = set().union(*relevant_docs.values())
     if not positive_ids.issubset(source_corpus):
         raise ValueError("At least one positive document is missing from the corpus")
 
-    target_size = max(target_size, len(positive_ids))
-    if target_size > len(source_corpus):
+    excluded_ids = set(excluded_document_ids or ())
+    unknown_excluded_ids = excluded_ids.difference(source_corpus)
+    if unknown_excluded_ids:
         raise ValueError(
-            f"Requested {target_size} documents from a corpus of "
-            f"{len(source_corpus)} documents"
+            f"{len(unknown_excluded_ids)} excluded documents are missing "
+            "from the source corpus"
+        )
+    protected_positives = positive_ids.intersection(excluded_ids)
+    if protected_positives:
+        raise ValueError(
+            "Excluded documents overlap with relevant documents: "
+            f"{sorted(protected_positives)[:5]}"
         )
 
-    negative_candidates = sorted(set(source_corpus).difference(positive_ids))
+    available_ids = set(source_corpus).difference(excluded_ids)
+    target_size = max(target_size, len(positive_ids))
+    if target_size > len(available_ids):
+        raise ValueError(
+            f"Requested {target_size} documents, but only "
+            f"{len(available_ids)} remain after exclusions"
+        )
+
+    negative_candidates = sorted(available_ids.difference(positive_ids))
     n_negatives = target_size - len(positive_ids)
     negative_ids = (
         rng.choice(negative_candidates, size=n_negatives, replace=False).tolist()
@@ -154,9 +234,11 @@ def add_random_negative_documents(
         for doc_id in tqdm(selected_ids, desc="Building corpus", unit="doc")
     }
     logger.info(
-        "Built corpus with %d positives and %d random negatives",
+        "Built corpus with %d positives, %d random negatives, and "
+        "%d excluded documents",
         len(positive_ids),
         n_negatives,
+        len(excluded_ids),
     )
     return corpus
 

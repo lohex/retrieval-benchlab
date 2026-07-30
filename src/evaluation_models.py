@@ -71,6 +71,14 @@ class BioASQSample:
 
 
 @dataclass(frozen=True)
+class CalibrationSet:
+    """Documents and provenance used for model-specific preprocessing."""
+
+    corpus: dict[str, str]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class PipelineDefinition:
     """Immutable configuration used to construct one retrieval pipeline."""
 

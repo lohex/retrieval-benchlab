@@ -25,7 +25,7 @@ _install_dependency_stubs()
 import src.evaluate as evaluation
 import src.evaluation_registry as registry
 import src.io as bio_io
-from src.evaluation_models import BioASQSample
+from src.evaluation_models import BioASQSample, CalibrationSet
 
 
 class _FakeEvaluator:
@@ -140,6 +140,33 @@ class EvaluationRegistryTests(unittest.TestCase):
         self.assertIsInstance(sample, BioASQSample)
         self.assertEqual(sample.queries, {"q1": "query"})
         self.assertEqual(sample.relevant_docs, {"q1": {"d1"}})
+
+    def test_io_loader_returns_a_typed_calibration_set(self) -> None:
+        calibration_path = self.root / "calibration" / "bioasq-5k"
+        calibration_path.mkdir(parents=True)
+        metadata = {
+            "set_name": "bioasq-5k",
+            "n_documents": 2,
+        }
+        (calibration_path / "metadata.json").write_text(
+            json.dumps(metadata),
+            encoding="utf-8",
+        )
+        corpus_dataset = {
+            "doc_id": ["d1", "d2"],
+            "text": ["document one", "document two"],
+        }
+
+        with patch.object(
+            bio_io,
+            "load_from_disk",
+            return_value=corpus_dataset,
+        ):
+            calibration = bio_io.load_calibration_set(calibration_path)
+
+        self.assertIsInstance(calibration, CalibrationSet)
+        self.assertEqual(set(calibration.corpus), {"d1", "d2"})
+        self.assertEqual(calibration.metadata["n_documents"], 2)
 
     def test_register_pipeline_is_idempotent_and_append_only(self) -> None:
         first_id = evaluation.register_pipeline(

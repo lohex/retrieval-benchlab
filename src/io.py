@@ -13,7 +13,11 @@ from urllib.request import urlopen
 
 from datasets import Dataset, load_dataset, load_from_disk
 
-from src.evaluation_models import BioASQSample, DatasetValidationError
+from src.evaluation_models import (
+    BioASQSample,
+    CalibrationSet,
+    DatasetValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +239,59 @@ def load_bioasq_sample(sample_dir: str | Path) -> BioASQSample:
     )
 
 
+def load_calibration_set(calibration_dir: str | Path) -> CalibrationSet:
+    """Load and validate a persisted document calibration set."""
+    calibration_dir = Path(calibration_dir)
+    metadata_path = calibration_dir / "metadata.json"
+    corpus_path = calibration_dir / "corpus"
+    logger.info("Loading calibration set from %s", calibration_dir)
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    corpus_dataset = load_from_disk(str(corpus_path))
+    corpus = dict(zip(corpus_dataset["doc_id"], corpus_dataset["text"]))
+    expected_documents = metadata.get("n_documents")
+    if expected_documents != len(corpus):
+        raise ValueError(
+            "Stored calibration-set size differs from metadata"
+        )
+    if any(not document.strip() for document in corpus.values()):
+        raise ValueError("At least one calibration document is empty")
+
+    logger.info(
+        "Loaded calibration set with %d documents",
+        len(corpus),
+    )
+    return CalibrationSet(corpus=corpus, metadata=metadata)
+
+
+def _save_document_store(
+    output_dir: str | Path,
+    corpus: dict[str, str],
+    metadata: dict[str, Any],
+) -> None:
+    """Atomically persist a document corpus and its JSON metadata."""
+    output_dir = Path(output_dir)
+    staging_dir = output_dir.with_name(f"{output_dir.name}_building")
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    staging_dir.mkdir(parents=True, exist_ok=False)
+    logger.info("Writing new document store to %s", staging_dir)
+
+    Dataset.from_dict(
+        {
+            "doc_id": list(corpus.keys()),
+            "text": list(corpus.values()),
+        }
+    ).save_to_disk(str(staging_dir / "corpus"))
+    (staging_dir / "metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    shutil.rmtree(output_dir, ignore_errors=True)
+    staging_dir.replace(output_dir)
+    logger.info("New document store saved successfully to %s", output_dir)
+
+
 def save_sample(
     output_dir: str | Path,
     queries: dict[str, str],
@@ -243,19 +300,6 @@ def save_sample(
     metadata: dict[str, Any],
 ) -> None:
     """Persist a newly generated sample, replacing the previous one."""
-    output_dir = Path(output_dir)
-    staging_dir = output_dir.with_name(f"{output_dir.name}_building")
-    shutil.rmtree(staging_dir, ignore_errors=True)
-    staging_dir.mkdir(parents=True, exist_ok=False)
-    logger.info("Writing new sample to staging directory %s", staging_dir)
-
-    Dataset.from_dict(
-        {
-            "doc_id": list(corpus.keys()),
-            "text": list(corpus.values()),
-        }
-    ).save_to_disk(str(staging_dir / "corpus"))
-
     payload = {
         **metadata,
         "queries": queries,
@@ -263,11 +307,17 @@ def save_sample(
             qid: sorted(doc_ids) for qid, doc_ids in relevant_docs.items()
         },
     }
-    (staging_dir / "metadata.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _save_document_store(output_dir, corpus, payload)
 
-    shutil.rmtree(output_dir, ignore_errors=True)
-    staging_dir.replace(output_dir)
-    logger.info("New sample saved successfully to %s", output_dir)
+
+def save_calibration_set(
+    output_dir: str | Path,
+    corpus: dict[str, str],
+    metadata: dict[str, Any],
+) -> None:
+    """Persist a newly generated calibration set, replacing the previous one."""
+    if metadata.get("n_documents") != len(corpus):
+        raise ValueError(
+            "Calibration-set size differs from metadata before saving"
+        )
+    _save_document_store(output_dir, corpus, metadata)

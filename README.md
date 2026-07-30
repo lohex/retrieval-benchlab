@@ -24,11 +24,12 @@ src/
 ## Workflow
 
 1. Run [`BioASQ_sample.ipynb`](notebooks/BioASQ_sample.ipynb).
-2. Adjust `N_QUERIES_PER_SUBSET`, `N_CORPUS_DOCS`, and `SEED` if needed.
+2. Adjust the sample and calibration configuration if needed.
 3. Load the shared benchmark once.
-4. Run the creation blocks for the desired question types.
-5. Inspect examples by changing `EXAMPLE_SUBSET` and `EXAMPLE_PAGE`.
-6. Run [`Retreaval_test.ipynb`](notebooks/Retreaval_test.ipynb), select a
+4. Create the common 5,000-document calibration set.
+5. Run the creation blocks for the desired question types.
+6. Inspect examples by changing `EXAMPLE_SUBSET` and `EXAMPLE_PAGE`.
+7. Run [`Retreaval_test.ipynb`](notebooks/Retreaval_test.ipynb), select a
    `SAMPLE_NAME`, and evaluate a sentence-transformer with cosine similarity.
 
 The sample notebook supports these six stored subsets:
@@ -42,6 +43,11 @@ The sample notebook supports these six stored subsets:
 Each creation call replaces only its own directory below
 `Retreaval/data` in Google Drive. Passing `n_queries=None` uses every eligible
 question instead of a fixed-size random sample.
+
+The calibration set is stored separately below
+`Retreaval/calibration/bioasq-5k`. It excludes every document annotated as
+relevant to a complete `list`, `factoid`, or `summary` question. Its documents
+are also excluded from every sampled retrieval corpus.
 
 Both notebooks can clone this public repository automatically when they run in
 Google Colab:
@@ -82,6 +88,7 @@ abstracts come from the `corpus` configuration of the community dataset
 
 The loader retains only questions for which every annotated gold document is
 present in the corpus. Missing documents therefore exclude a complete question
-instead of changing its relevance set. Random negatives are sampled from the
-44,183-document corpus, so the benchmark does not represent retrieval against
-all of PubMed.
+instead of changing its relevance set. Empty source documents are discarded.
+Random negatives are sampled from the remaining source corpus after removing
+the common calibration documents, so the benchmark does not represent
+retrieval against all of PubMed.
