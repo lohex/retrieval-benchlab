@@ -13,6 +13,8 @@ from urllib.request import urlopen
 
 from datasets import Dataset, load_dataset, load_from_disk
 
+from src.evaluation_models import BioASQSample, DatasetValidationError
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,26 @@ def mount_google_drive() -> None:
 def sample_directory(output_root: str | Path, subset_name: str = "current") -> Path:
     """Return the output directory for one named sample or subset."""
     return Path(output_root) / subset_name
+
+
+def discover_dataset_directories(datasets_root: str | Path) -> list[Path]:
+    """Find saved BioASQ sample directories directly below a root folder."""
+    root = Path(datasets_root)
+    if not root.is_dir():
+        raise DatasetValidationError(f"Dataset root does not exist: {root}")
+
+    dataset_paths = sorted(
+        path
+        for path in root.iterdir()
+        if path.is_dir()
+        and (path / "metadata.json").is_file()
+        and (path / "corpus").is_dir()
+    )
+    if not dataset_paths:
+        raise DatasetValidationError(
+            f"No saved BioASQ datasets found directly below {root}"
+        )
+    return dataset_paths
 
 
 def _read_json(source: str | Path) -> dict[str, Any]:
@@ -172,9 +194,7 @@ def load_bioasq_benchmark(
     return queries, relevant_docs, query_types, corpus, source_metadata
 
 
-def load_bioasq_sample(
-    sample_dir: str | Path,
-) -> tuple[dict[str, str], dict[str, set[str]], dict[str, str], dict[str, Any]]:
+def load_bioasq_sample(sample_dir: str | Path) -> BioASQSample:
     """Load and validate a sample created by ``BioASQ_sample.ipynb``."""
     sample_dir = Path(sample_dir)
     metadata_path = sample_dir / "metadata.json"
@@ -207,7 +227,12 @@ def load_bioasq_sample(
         len(positive_ids),
         len(corpus),
     )
-    return queries, relevant_docs, corpus, metadata
+    return BioASQSample(
+        queries=queries,
+        relevant_docs=relevant_docs,
+        corpus=corpus,
+        metadata=metadata,
+    )
 
 
 def save_sample(

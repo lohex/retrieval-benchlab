@@ -16,6 +16,9 @@ notebooks/
 src/
   io.py                  BioASQ metadata, corpus, Drive, and persistence helpers
   sampling.py            Type filters, document filters, and sampling helpers
+  evaluation_models.py   Typed samples, pipeline definitions, and outcomes
+  evaluation_registry.py Append-only SQLite registry and result persistence
+  evaluate.py             Sentence-transformer evaluation orchestration
 ```
 
 ## Workflow
@@ -58,6 +61,16 @@ The retrieval notebook reports:
 Cosine similarity is currently configured explicitly as the retrieval score.
 The code is structured so that additional embedding models and score functions
 can be added without duplicating the data-loading and sampling pipeline.
+
+Persistent evaluation uses two SQLite databases below
+`Retreaval/databases` in Google Drive. `datasets.sqlite` stores immutable
+pipeline definitions and versioned dataset identities. `results.sqlite` stores
+one result for every `pipeline_id` and `dataset_id` combination. The public API
+remains available from `src.evaluate`:
+
+```python
+from src.evaluate import evaluate, register_dataset, register_pipeline
+```
 
 ## Data sources and scope
 
