@@ -7,7 +7,7 @@ import logging
 import shutil
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -20,6 +20,14 @@ from src.evaluation_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+BioASQBenchmark: TypeAlias = tuple[
+    dict[str, str],
+    dict[str, set[str]],
+    dict[str, str],
+    dict[str, str],
+    dict[str, Any],
+]
 
 
 def mount_google_drive() -> None:
@@ -120,13 +128,7 @@ def load_bioasq_benchmark(
     corpus_config: str,
     corpus_split: str,
     questions_source: str | Path,
-) -> tuple[
-    dict[str, str],
-    dict[str, set[str]],
-    dict[str, str],
-    dict[str, str],
-    dict[str, Any],
-]:
+) -> BioASQBenchmark:
     """Load BioASQ questions and a corpus containing their PubMed abstracts."""
     from tqdm.auto import tqdm
 

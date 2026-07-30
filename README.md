@@ -16,6 +16,7 @@ notebooks/
 src/
   io.py                  BioASQ metadata, corpus, Drive, and persistence helpers
   sampling.py            Type filters, document filters, and sampling helpers
+  dataset_builder.py     Sample construction, persistence, and registration
   evaluation_models.py   Typed samples, pipeline definitions, and outcomes
   evaluation_registry.py Append-only SQLite registry and result persistence
   evaluate.py             Sentence-transformer evaluation orchestration
