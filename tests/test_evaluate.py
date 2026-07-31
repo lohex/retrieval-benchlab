@@ -277,6 +277,7 @@ class EvaluationRegistryTests(unittest.TestCase):
             evaluation.EvaluationStatus.SKIPPED_EXISTING,
         )
         self.assertEqual(first[0].metrics, {"map@100": 0.5, "ndcg@10": 0.75})
+        self.assertEqual(second[0].metrics, first[0].metrics)
 
         with sqlite3.connect(self.results_path) as connection:
             run_count = connection.execute(

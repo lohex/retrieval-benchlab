@@ -12,7 +12,7 @@ gold documents.
 ```text
 notebooks/
   BioASQ_sample.ipynb    Create, validate, inspect, and save filtered subsets
-  Retreaval_test.ipynb   Load one saved subset and evaluate a retriever
+  Retreaval_test.ipynb   Register and evaluate a pipeline on all datasets
 src/
   io.py                  BioASQ metadata, corpus, Drive, and persistence helpers
   sampling.py            Type filters, document filters, and sampling helpers
@@ -30,8 +30,8 @@ src/
 4. Create the common 5,000-document calibration set.
 5. Run the creation blocks for the desired question types.
 6. Inspect examples by changing `EXAMPLE_SUBSET` and `EXAMPLE_PAGE`.
-7. Run [`Retreaval_test.ipynb`](notebooks/Retreaval_test.ipynb), select a
-   `SAMPLE_NAME`, and evaluate a sentence-transformer with cosine similarity.
+7. Run [`Retreaval_test.ipynb`](notebooks/Retreaval_test.ipynb), register a
+   pipeline, and evaluate it on every latest dataset version.
 
 The sample notebook supports these six stored subsets:
 
@@ -78,6 +78,11 @@ remains available from `src.evaluate`:
 ```python
 from src.evaluate import evaluate, register_dataset, register_pipeline
 ```
+
+The test notebook calls `evaluate(pipeline_id, datasets_root)`. Existing results
+are loaded from `results.sqlite`, while missing combinations are evaluated and
+appended. Older registered versions and reverted folder contents are not
+evaluated.
 
 ## Data sources and scope
 

@@ -594,6 +594,30 @@ def result_exists(
     return None if row is None else str(row["result_id"])
 
 
+def get_result_metrics(
+    connection: sqlite3.Connection,
+    result_id: str,
+) -> dict[str, float]:
+    """Load all stored metrics belonging to one evaluation result."""
+    rows = connection.execute(
+        """
+        SELECT metric_name, value
+        FROM metrics
+        WHERE result_id = ?
+        ORDER BY metric_name
+        """,
+        (result_id,),
+    ).fetchall()
+    if not rows:
+        raise EvaluationRegistryError(
+            f"Result {result_id!r} has no stored metrics"
+        )
+    return {
+        str(row["metric_name"]): float(row["value"])
+        for row in rows
+    }
+
+
 def store_evaluation_result(
     connection: sqlite3.Connection,
     pipeline_id: str,

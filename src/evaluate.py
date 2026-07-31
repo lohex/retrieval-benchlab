@@ -23,6 +23,7 @@ from src.evaluation_registry import (
     DEFAULT_REGISTRY_DB,
     DEFAULT_RESULTS_DB,
     get_pipeline,
+    get_result_metrics,
     open_registry_database,
     open_results_database,
     register_dataset,
@@ -153,12 +154,14 @@ def _existing_outcome(
     )
     if result_id is None:
         return None
+    metrics = get_result_metrics(connection, result_id)
     return EvaluationOutcome(
         dataset_id=dataset_record.dataset_id,
         dataset_name=dataset_record.dataset_name,
         dataset_version=dataset_record.version,
         status=EvaluationStatus.SKIPPED_EXISTING,
         result_id=result_id,
+        metrics=metrics,
     )
 
 
