@@ -13,6 +13,7 @@ gold documents.
 notebooks/
   BioASQ_sample.ipynb    Create, validate, inspect, and save filtered subsets
   Retreaval_test.ipynb   Register and evaluate a pipeline on all datasets
+  Visualize_results.ipynb Analyze datasets and compare registered pipelines
 src/
   io.py                  BioASQ metadata, corpus, Drive, and persistence helpers
   sampling.py            Type filters, document filters, and sampling helpers
@@ -20,6 +21,7 @@ src/
   evaluation_models.py   Typed samples, pipeline definitions, and outcomes
   evaluation_registry.py Append-only SQLite registry and result persistence
   evaluate.py             Sentence-transformer evaluation orchestration
+  reporting.py            Read-only dataset and pipeline report tables
 ```
 
 ## Workflow
@@ -32,6 +34,8 @@ src/
 6. Inspect examples by changing `EXAMPLE_SUBSET` and `EXAMPLE_PAGE`.
 7. Run [`Retreaval_test.ipynb`](notebooks/Retreaval_test.ipynb), register a
    pipeline, and evaluate it on every latest dataset version.
+8. Run [`Visualize_results.ipynb`](notebooks/Visualize_results.ipynb) to inspect
+   dataset composition and compare all stored pipelines by metric.
 
 The sample notebook supports these six stored subsets:
 
@@ -55,6 +59,7 @@ Google Colab:
 
 * [Open the sample notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/BioASQ_sample.ipynb)
 * [Open the retrieval notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Retreaval_test.ipynb)
+* [Open the visualization notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Visualize_results.ipynb)
 
 ## Current evaluation
 
