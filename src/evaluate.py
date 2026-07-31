@@ -188,6 +188,9 @@ def _build_evaluator(
         euclidean_score=util.euclidean_sim,
         manhattan_score=util.manhattan_sim,
     )
+    main_score_function: str | None = metric_name
+    if definition.similarity_metric is SimilarityMetric.MEAN_CENTERED_COSINE:
+        main_score_function = None
     evaluator_arguments = {
         **definition.metric_config,
         **definition.evaluator_kwargs,
@@ -202,7 +205,7 @@ def _build_evaluator(
         show_progress_bar=definition.show_progress_bar,
         write_csv=False,
         score_functions={metric_name: score_function},
-        main_score_function=metric_name,
+        main_score_function=main_score_function,
         **evaluator_arguments,
     )
 

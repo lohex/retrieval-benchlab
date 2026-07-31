@@ -31,8 +31,34 @@ from src.evaluation_models import BioASQSample, CalibrationSet
 
 
 class _FakeEvaluator:
-    def __init__(self, *, name: str, main_score_function: str, **kwargs) -> None:
-        self.metric_prefix = f"{name}_{main_score_function}_"
+    last_main_score_function: str | None = None
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        score_functions: dict[str, object],
+        main_score_function: str | None,
+        **kwargs,
+    ) -> None:
+        built_in_functions = {
+            "cosine",
+            "dot",
+            "euclidean",
+            "manhattan",
+        }
+        is_custom_main_function = (
+            main_score_function is not None
+            and main_score_function not in built_in_functions
+        )
+        if is_custom_main_function:
+            raise ValueError(
+                f"{main_score_function!r} is not a valid SimilarityFunction"
+            )
+
+        type(self).last_main_score_function = main_score_function
+        metric_name = next(iter(score_functions))
+        self.metric_prefix = f"{name}_{metric_name}_"
 
     def __call__(self, model) -> dict[str, float]:
         return {
@@ -404,6 +430,37 @@ class EvaluationRegistryTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual(run_count, 1)
         self.assertEqual(metrics, [("map@100", 0.5), ("ndcg@10", 0.75)])
+
+    def test_centered_evaluator_does_not_use_custom_main_function(self) -> None:
+        dataset_path = self._create_dataset_directory("list-multiple")
+        pipeline_id = evaluation.register_pipeline(
+            "sentence-transformers/test-model",
+            "mean_centered_cosine",
+            embedding_mean=(0.0, 0.0),
+            registry_db_path=self.registry_path,
+        )
+
+        module_stubs = _sentence_transformers_stubs()
+        with (
+            patch.dict(sys.modules, module_stubs),
+            patch.object(
+                evaluation,
+                "load_bioasq_sample",
+                return_value=_sample_payload(),
+            ),
+        ):
+            outcomes = evaluation.evaluate(
+                pipeline_id,
+                dataset_path.parent,
+                registry_db_path=self.registry_path,
+                results_db_path=self.results_path,
+            )
+
+        self.assertIsNone(_FakeEvaluator.last_main_score_function)
+        self.assertEqual(
+            outcomes[0].metrics,
+            {"map@100": 0.5, "ndcg@10": 0.75},
+        )
 
     def test_evaluate_skips_a_reverted_non_latest_dataset(self) -> None:
         dataset_path = self._create_dataset_directory("list-multiple")
