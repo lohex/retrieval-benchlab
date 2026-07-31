@@ -70,9 +70,11 @@ The retrieval notebook reports:
 * Recall@10 and Recall@100
 * MAP@100
 
-Cosine similarity is currently configured explicitly as the retrieval score.
-The code is structured so that additional embedding models and score functions
-can be added without duplicating the data-loading and sampling pipeline.
+The active notebook pipeline computes the dimension-wise embedding mean of the
+shared calibration set and stores that vector in the immutable pipeline
+configuration. Retrieval subtracts the same mean from query and document
+embeddings before cosine similarity. A standard cosine baseline remains as a
+commented registration block in the notebook.
 
 Persistent evaluation uses two SQLite databases below
 `Retreaval/databases` in Google Drive. `datasets.sqlite` stores immutable

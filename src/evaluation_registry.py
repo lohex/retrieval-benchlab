@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -260,6 +261,7 @@ def _build_pipeline_definition(
     model_kwargs: Mapping[str, Any] | None,
     evaluator_kwargs: Mapping[str, Any] | None,
     show_progress_bar: bool,
+    embedding_mean: Sequence[float] | None,
 ) -> PipelineDefinition:
     model_name = model_name.strip()
     if not model_name:
@@ -285,15 +287,35 @@ def _build_pipeline_definition(
             f"{sorted(reserved)}"
         )
 
+    resolved_metric = SimilarityMetric.parse(similarity_metric)
+    resolved_embedding_mean: tuple[float, ...] | None = None
+    if embedding_mean is not None:
+        resolved_embedding_mean = tuple(float(value) for value in embedding_mean)
+        if not resolved_embedding_mean:
+            raise ValueError("embedding_mean must not be empty")
+        if not all(math.isfinite(value) for value in resolved_embedding_mean):
+            raise ValueError("embedding_mean must contain only finite values")
+
+    requires_mean = resolved_metric is SimilarityMetric.MEAN_CENTERED_COSINE
+    if requires_mean and resolved_embedding_mean is None:
+        raise ValueError(
+            "mean_centered_cosine requires an embedding_mean"
+        )
+    if not requires_mean and resolved_embedding_mean is not None:
+        raise ValueError(
+            "embedding_mean is only valid for mean_centered_cosine"
+        )
+
     definition = PipelineDefinition(
         model_name=model_name,
-        similarity_metric=SimilarityMetric.parse(similarity_metric),
+        similarity_metric=resolved_metric,
         batch_size=batch_size,
         corpus_chunk_size=corpus_chunk_size,
         metric_config=_normalise_metric_config(metric_config),
         model_kwargs=resolved_model_kwargs,
         evaluator_kwargs=resolved_evaluator_kwargs,
         show_progress_bar=show_progress_bar,
+        embedding_mean=resolved_embedding_mean,
     )
     _canonical_json(definition.to_dict())
     return definition
@@ -310,6 +332,7 @@ def register_pipeline(
     model_kwargs: Mapping[str, Any] | None = None,
     evaluator_kwargs: Mapping[str, Any] | None = None,
     show_progress_bar: bool = True,
+    embedding_mean: Sequence[float] | None = None,
 ) -> str:
     """Return the ID of an existing or newly appended pipeline definition."""
     mount_google_drive()
@@ -322,6 +345,7 @@ def register_pipeline(
         model_kwargs=model_kwargs,
         evaluator_kwargs=evaluator_kwargs,
         show_progress_bar=show_progress_bar,
+        embedding_mean=embedding_mean,
     )
     config_json = _canonical_json(definition.to_dict())
     pipeline_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()

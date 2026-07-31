@@ -11,6 +11,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import numpy as np
+
 
 def _install_dependency_stubs() -> None:
     datasets_module = types.ModuleType("datasets")
@@ -42,6 +44,38 @@ class _FakeEvaluator:
 class _FakeSentenceTransformer:
     def __init__(self, model_name: str, **kwargs) -> None:
         self.model_name = model_name
+
+
+class _CalibrationModel:
+    def __init__(self) -> None:
+        self.arguments: dict[str, object] = {}
+
+    def encode_document(self, documents, **kwargs):
+        self.arguments = {"documents": list(documents), **kwargs}
+        return np.array(
+            [
+                [1.0, 2.0, 4.0],
+                [3.0, 6.0, 8.0],
+            ]
+        )
+
+    def encode(self, documents, **kwargs):
+        raise AssertionError("Document calibration must use encode_document")
+
+
+class _FakeTensor:
+    def __init__(self, values) -> None:
+        self.values = np.asarray(values, dtype=float)
+
+    @property
+    def shape(self):
+        return self.values.shape
+
+    def new_tensor(self, values):
+        return _FakeTensor(values)
+
+    def __sub__(self, other):
+        return _FakeTensor(self.values - other.values)
 
 
 def _sentence_transformers_stubs() -> dict[str, types.ModuleType]:
@@ -191,11 +225,93 @@ class EvaluationRegistryTests(unittest.TestCase):
             count = connection.execute(
                 "SELECT COUNT(*) FROM pipelines"
             ).fetchone()[0]
+            cosine_config = connection.execute(
+                """
+                SELECT config_json
+                FROM pipelines
+                WHERE similarity_metric = 'cosine'
+                """
+            ).fetchone()[0]
             self.assertEqual(count, 2)
+            self.assertNotIn("embedding_mean", json.loads(cosine_config))
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute(
                     "UPDATE pipelines SET model_name = 'changed'"
                 )
+
+    def test_register_mean_centered_pipeline_stores_embedding_mean(self) -> None:
+        pipeline_id = evaluation.register_pipeline(
+            "sentence-transformers/test-model",
+            "mean_centered_cosine",
+            embedding_mean=[0.25, -0.5],
+            registry_db_path=self.registry_path,
+        )
+        repeated_id = evaluation.register_pipeline(
+            "sentence-transformers/test-model",
+            "centered_cosine",
+            embedding_mean=(0.25, -0.5),
+            registry_db_path=self.registry_path,
+        )
+
+        self.assertEqual(pipeline_id, repeated_id)
+        with sqlite3.connect(self.registry_path) as connection:
+            stored_json = connection.execute(
+                "SELECT config_json FROM pipelines WHERE pipeline_id = ?",
+                (pipeline_id,),
+            ).fetchone()[0]
+        stored_config = json.loads(stored_json)
+        self.assertEqual(stored_config["embedding_mean"], [0.25, -0.5])
+
+    def test_embedding_mean_is_restricted_to_centered_cosine(self) -> None:
+        with self.assertRaises(ValueError):
+            evaluation.register_pipeline(
+                "sentence-transformers/test-model",
+                "mean_centered_cosine",
+                registry_db_path=self.registry_path,
+            )
+        with self.assertRaises(ValueError):
+            evaluation.register_pipeline(
+                "sentence-transformers/test-model",
+                "cosine",
+                embedding_mean=[0.0, 0.0],
+                registry_db_path=self.registry_path,
+            )
+
+    def test_compute_embedding_mean_uses_raw_document_embeddings(self) -> None:
+        model = _CalibrationModel()
+
+        embedding_mean = evaluation.compute_embedding_mean(
+            model,
+            ["document one", "document two"],
+            batch_size=2,
+            show_progress_bar=False,
+        )
+
+        self.assertEqual(embedding_mean, (2.0, 4.0, 6.0))
+        self.assertFalse(model.arguments["normalize_embeddings"])
+        self.assertTrue(model.arguments["convert_to_numpy"])
+
+    def test_mean_centered_cosine_centers_queries_and_corpus(self) -> None:
+        captured: dict[str, np.ndarray] = {}
+
+        def cosine_score(queries, corpus):
+            captured["queries"] = queries.values
+            captured["corpus"] = corpus.values
+            return "score"
+
+        score = evaluation._mean_centered_cosine_score(
+            _FakeTensor([[2.0, 5.0]]),
+            _FakeTensor([[4.0, 8.0], [0.0, 2.0]]),
+            embedding_mean=(1.0, 2.0),
+            cosine_score=cosine_score,
+        )
+
+        self.assertEqual(score, "score")
+        np.testing.assert_allclose(captured["queries"], [[1.0, 3.0]])
+        np.testing.assert_allclose(
+            captured["corpus"],
+            [[3.0, 6.0], [-1.0, 0.0]],
+        )
 
     def test_register_dataset_increments_versions_for_changed_content(self) -> None:
         dataset_path = self._create_dataset_directory("list-multiple")

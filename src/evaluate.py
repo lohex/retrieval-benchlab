@@ -6,9 +6,12 @@ import logging
 import math
 import sqlite3
 import time
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from src.evaluation_models import (
     BioASQSample,
@@ -45,6 +48,7 @@ __all__ = [
     "EvaluationOutcome",
     "EvaluationStatus",
     "SimilarityMetric",
+    "compute_embedding_mean",
     "evaluate",
     "register_dataset",
     "register_pipeline",
@@ -54,6 +58,116 @@ __all__ = [
 def _utc_now() -> str:
     current_time = datetime.now(timezone.utc)
     return current_time.isoformat()
+
+
+def compute_embedding_mean(
+    model: Any,
+    documents: Iterable[str],
+    *,
+    batch_size: int = 64,
+    show_progress_bar: bool = True,
+) -> tuple[float, ...]:
+    """Encode calibration documents and return one mean per dimension."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    document_texts = [str(document).strip() for document in documents]
+    if not document_texts:
+        raise ValueError("documents must not be empty")
+    if any(not document for document in document_texts):
+        raise ValueError("documents must not contain empty text")
+
+    encode_documents = getattr(model, "encode_document", None)
+    if encode_documents is None:
+        encode_documents = model.encode
+    embeddings = encode_documents(
+        document_texts,
+        batch_size=batch_size,
+        show_progress_bar=show_progress_bar,
+        convert_to_numpy=True,
+        normalize_embeddings=False,
+    )
+    embedding_matrix = np.asarray(embeddings)
+    has_valid_shape = (
+        embedding_matrix.ndim == 2
+        and embedding_matrix.shape[0] == len(document_texts)
+        and embedding_matrix.shape[1] > 0
+    )
+    if not has_valid_shape:
+        raise EvaluationRegistryError(
+            "Model returned an invalid calibration embedding matrix"
+        )
+    if not np.isfinite(embedding_matrix).all():
+        raise EvaluationRegistryError(
+            "Calibration embeddings contain non-finite values"
+        )
+
+    embedding_mean = embedding_matrix.mean(axis=0, dtype=np.float64)
+    logger.info(
+        "Computed a %d-dimensional mean from %d calibration documents",
+        embedding_mean.shape[0],
+        embedding_matrix.shape[0],
+    )
+    return tuple(float(value) for value in embedding_mean)
+
+
+def _mean_centered_cosine_score(
+    query_embeddings: Any,
+    corpus_embeddings: Any,
+    *,
+    embedding_mean: tuple[float, ...],
+    cosine_score: Callable[[Any, Any], Any],
+) -> Any:
+    query_dimension = int(query_embeddings.shape[-1])
+    corpus_dimension = int(corpus_embeddings.shape[-1])
+    dimensions_match = (
+        query_dimension == corpus_dimension == len(embedding_mean)
+    )
+    if not dimensions_match:
+        raise EvaluationRegistryError(
+            "Embedding dimension does not match the stored calibration mean"
+        )
+
+    query_mean = query_embeddings.new_tensor(embedding_mean)
+    corpus_mean = corpus_embeddings.new_tensor(embedding_mean)
+    centered_queries = query_embeddings - query_mean
+    centered_corpus = corpus_embeddings - corpus_mean
+    return cosine_score(centered_queries, centered_corpus)
+
+
+def _score_function(
+    definition: PipelineDefinition,
+    cosine_score: Callable[[Any, Any], Any],
+    dot_score: Callable[[Any, Any], Any],
+    euclidean_score: Callable[[Any, Any], Any],
+    manhattan_score: Callable[[Any, Any], Any],
+) -> Callable[[Any, Any], Any]:
+    if definition.similarity_metric is SimilarityMetric.MEAN_CENTERED_COSINE:
+        if definition.embedding_mean is None:
+            raise EvaluationRegistryError(
+                "Mean-centered cosine pipeline has no embedding mean"
+            )
+
+        def mean_centered_cosine(
+            query_embeddings: Any,
+            corpus_embeddings: Any,
+        ) -> Any:
+            return _mean_centered_cosine_score(
+                query_embeddings,
+                corpus_embeddings,
+                embedding_mean=definition.embedding_mean,
+                cosine_score=cosine_score,
+            )
+
+        return mean_centered_cosine
+
+    score_functions = {
+        SimilarityMetric.COSINE: cosine_score,
+        SimilarityMetric.DOT: dot_score,
+        SimilarityMetric.EUCLIDEAN: euclidean_score,
+        SimilarityMetric.MANHATTAN: manhattan_score,
+    }
+    return score_functions[definition.similarity_metric]
 
 
 def _build_evaluator(
@@ -66,13 +180,14 @@ def _build_evaluator(
         InformationRetrievalEvaluator,
     )
 
-    score_functions = {
-        SimilarityMetric.COSINE: util.cos_sim,
-        SimilarityMetric.DOT: util.dot_score,
-        SimilarityMetric.EUCLIDEAN: util.euclidean_sim,
-        SimilarityMetric.MANHATTAN: util.manhattan_sim,
-    }
     metric_name = definition.similarity_metric.value
+    score_function = _score_function(
+        definition,
+        cosine_score=util.cos_sim,
+        dot_score=util.dot_score,
+        euclidean_score=util.euclidean_sim,
+        manhattan_score=util.manhattan_sim,
+    )
     evaluator_arguments = {
         **definition.metric_config,
         **definition.evaluator_kwargs,
@@ -86,9 +201,7 @@ def _build_evaluator(
         name=f"{dataset_record.dataset_name}-v{dataset_record.version}",
         show_progress_bar=definition.show_progress_bar,
         write_csv=False,
-        score_functions={
-            metric_name: score_functions[definition.similarity_metric]
-        },
+        score_functions={metric_name: score_function},
         main_score_function=metric_name,
         **evaluator_arguments,
     )

@@ -24,6 +24,7 @@ class SimilarityMetric(str, Enum):
     """Similarity functions supported by Sentence Transformers."""
 
     COSINE = "cosine"
+    MEAN_CENTERED_COSINE = "mean_centered_cosine"
     DOT = "dot"
     EUCLIDEAN = "euclidean"
     MANHATTAN = "manhattan"
@@ -37,6 +38,8 @@ class SimilarityMetric(str, Enum):
         aliases = {
             "cos": cls.COSINE,
             "cosine": cls.COSINE,
+            "centered_cosine": cls.MEAN_CENTERED_COSINE,
+            "mean_centered_cosine": cls.MEAN_CENTERED_COSINE,
             "dot": cls.DOT,
             "dot_product": cls.DOT,
             "euclidean": cls.EUCLIDEAN,
@@ -90,10 +93,11 @@ class PipelineDefinition:
     model_kwargs: dict[str, Any]
     evaluator_kwargs: dict[str, Any]
     show_progress_bar: bool
+    embedding_mean: tuple[float, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible representation."""
-        return {
+        config = {
             "model_name": self.model_name,
             "similarity_metric": self.similarity_metric.value,
             "batch_size": self.batch_size,
@@ -103,6 +107,9 @@ class PipelineDefinition:
             "evaluator_kwargs": self.evaluator_kwargs,
             "show_progress_bar": self.show_progress_bar,
         }
+        if self.embedding_mean is not None:
+            config["embedding_mean"] = self.embedding_mean
+        return config
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> PipelineDefinition:
@@ -122,6 +129,11 @@ class PipelineDefinition:
             model_kwargs=dict(value["model_kwargs"]),
             evaluator_kwargs=dict(value["evaluator_kwargs"]),
             show_progress_bar=bool(value["show_progress_bar"]),
+            embedding_mean=(
+                tuple(float(item) for item in value["embedding_mean"])
+                if value.get("embedding_mean") is not None
+                else None
+            ),
         )
 
 
