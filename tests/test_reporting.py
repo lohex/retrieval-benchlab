@@ -48,56 +48,49 @@ class ReportingTests(unittest.TestCase):
                 );
                 """
             )
-            dataset_rows = [
-                (
-                    "dataset_old",
-                    "list-one",
-                    1,
-                    "old",
-                    "/tmp/list-one",
-                    2,
-                    10,
-                    2,
-                    json.dumps({"n_positive_documents": 2}),
-                    "2026-01-01",
-                ),
-                (
-                    "dataset_new",
-                    "list-one",
-                    2,
-                    "new",
-                    "/tmp/list-one",
-                    4,
-                    20,
-                    8,
-                    json.dumps({"n_positive_documents": 6}),
-                    "2026-01-02",
-                ),
-                (
-                    "dataset_factoid",
-                    "factoid-multiple",
-                    1,
-                    "factoid",
-                    "/tmp/factoid-multiple",
-                    5,
-                    30,
-                    15,
-                    json.dumps({"n_positive_documents": 12}),
-                    "2026-01-01",
-                ),
-            ]
             connection.executemany(
-                """
-                INSERT INTO datasets
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                dataset_rows,
+                "INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        "dataset_old",
+                        "list-one",
+                        1,
+                        "old",
+                        "/tmp/list-one",
+                        2,
+                        10,
+                        2,
+                        json.dumps({"n_positive_documents": 2}),
+                        "2026-01-01",
+                    ),
+                    (
+                        "dataset_new",
+                        "list-one",
+                        2,
+                        "new",
+                        "/tmp/list-one",
+                        4,
+                        20,
+                        8,
+                        json.dumps({"n_positive_documents": 6}),
+                        "2026-01-02",
+                    ),
+                    (
+                        "dataset_factoid",
+                        "factoid-multiple",
+                        1,
+                        "factoid",
+                        "/tmp/factoid-multiple",
+                        5,
+                        30,
+                        15,
+                        json.dumps({"n_positive_documents": 12}),
+                        "2026-01-01",
+                    ),
+                ],
             )
             connection.executemany(
-                """
-                INSERT INTO pipelines
-                VALUES (?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO pipelines VALUES (?, ?, ?, ?, ?)",
                 [
                     (
                         "pipeline_aaaaaaaa",
@@ -108,8 +101,8 @@ class ReportingTests(unittest.TestCase):
                     ),
                     (
                         "pipeline_bbbbbbbb",
-                        "org/model-b",
-                        "dot",
+                        "BM25",
+                        "bm25",
                         "{}",
                         "2026-01-02",
                     ),
@@ -123,6 +116,7 @@ class ReportingTests(unittest.TestCase):
                 CREATE TABLE evaluation_runs (
                     result_id TEXT,
                     pipeline_id TEXT,
+                    evaluation_id TEXT,
                     dataset_id TEXT,
                     dataset_name TEXT,
                     dataset_version INTEGER,
@@ -137,14 +131,12 @@ class ReportingTests(unittest.TestCase):
                 """
             )
             connection.executemany(
-                """
-                INSERT INTO evaluation_runs
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO evaluation_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         "result_old",
                         "pipeline_aaaaaaaa",
+                        "evaluation_default",
                         "dataset_old",
                         "list-one",
                         1,
@@ -154,6 +146,7 @@ class ReportingTests(unittest.TestCase):
                     (
                         "result_new",
                         "pipeline_aaaaaaaa",
+                        "evaluation_default",
                         "dataset_new",
                         "list-one",
                         2,
@@ -163,6 +156,7 @@ class ReportingTests(unittest.TestCase):
                     (
                         "result_factoid",
                         "pipeline_bbbbbbbb",
+                        "evaluation_default",
                         "dataset_factoid",
                         "factoid-multiple",
                         1,
@@ -194,9 +188,10 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(list_row["unique_positives_per_query"], 1.5)
 
         self.assertNotIn("dataset_old", set(report.metrics["dataset_id"]))
+        self.assertEqual(set(report.metrics["value"]), {0.8, 0.5})
         self.assertEqual(
-            set(report.metrics["value"]),
-            {0.8, 0.5},
+            set(report.metrics["evaluation_id"]),
+            {"evaluation_default"},
         )
         self.assertEqual(
             set(report.pipelines["evaluated_latest_datasets"]),
