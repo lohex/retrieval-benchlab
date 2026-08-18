@@ -216,7 +216,7 @@ class EvaluationRegistryTests(unittest.TestCase):
         self.assertEqual(first[0].status, evaluation.EvaluationStatus.EVALUATED)
         self.assertEqual(second[0].status, evaluation.EvaluationStatus.SKIPPED_EXISTING)
         with sqlite3.connect(self.results_path) as connection:
-            count = connection.execute("SELECT COUNT(*) FROM evaluation_runs_v2").fetchone()[0]
+            count = connection.execute("SELECT COUNT(*) FROM evaluation_runs").fetchone()[0]
         self.assertEqual(count, 1)
 
 
