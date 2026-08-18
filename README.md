@@ -134,12 +134,14 @@ the active default baseline.
 
 Persistent evaluation uses two SQLite databases below `Retreaval/databases` in
 Google Drive. `datasets.sqlite` stores immutable pipeline definitions,
-evaluation definitions, and versioned dataset identities. New results are stored
-in `evaluation_runs_v2` and `metrics_v2` in `results.sqlite`, keyed by pipeline,
-evaluation, and dataset. Reporting keeps a fallback for legacy result tables.
+evaluation definitions, and versioned dataset identities. `results.sqlite`
+stores `evaluation_runs` and `metrics`, keyed by pipeline, evaluation, and
+dataset.
 
 Existing results for the same triple are loaded instead of recomputed. Older
-registered dataset versions and reverted folder contents are not evaluated.
+registered dataset versions and reverted folder contents are not evaluated. The
+final cell of `Visualize_results.ipynb` can optionally delete both databases for
+a clean reset; `RESET_DATABASES` is `False` by default.
 
 ## Data sources and scope
 
