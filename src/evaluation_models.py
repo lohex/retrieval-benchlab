@@ -122,26 +122,26 @@ class PipelineDefinition:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> PipelineDefinition:
-        retriever_type = RetrieverType.parse(value.get("retriever_type", "dense"))
+        retriever_type = RetrieverType.parse(value["retriever_type"])
         if retriever_type is RetrieverType.BM25:
             return cls(
                 retriever_type=retriever_type,
-                bm25_k1=float(value.get("bm25_k1", 1.5)),
-                bm25_b=float(value.get("bm25_b", 0.75)),
+                bm25_k1=float(value["bm25_k1"]),
+                bm25_b=float(value["bm25_b"]),
             )
         return cls(
             retriever_type=retriever_type,
             model_name=str(value["model_name"]),
             similarity_metric=SimilarityMetric.parse(value["similarity_metric"]),
-            model_kwargs=dict(value.get("model_kwargs", {})),
+            model_kwargs=dict(value["model_kwargs"]),
             query_prompt=(
                 str(value["query_prompt"])
-                if value.get("query_prompt") is not None
+                if value["query_prompt"] is not None
                 else None
             ),
             embedding_mean=(
                 tuple(float(item) for item in value["embedding_mean"])
-                if value.get("embedding_mean") is not None
+                if "embedding_mean" in value
                 else None
             ),
         )
