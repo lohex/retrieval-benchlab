@@ -104,7 +104,7 @@ END;
 """
 
 _RESULTS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS evaluation_runs_v2 (
+CREATE TABLE IF NOT EXISTS evaluation_runs (
     result_id TEXT PRIMARY KEY,
     pipeline_id TEXT NOT NULL,
     evaluation_id TEXT NOT NULL,
@@ -120,32 +120,32 @@ CREATE TABLE IF NOT EXISTS evaluation_runs_v2 (
     UNIQUE (pipeline_id, evaluation_id, dataset_id)
 );
 
-CREATE TABLE IF NOT EXISTS metrics_v2 (
+CREATE TABLE IF NOT EXISTS metrics (
     result_id TEXT NOT NULL,
     metric_name TEXT NOT NULL,
     value REAL NOT NULL,
     PRIMARY KEY (result_id, metric_name),
-    FOREIGN KEY (result_id) REFERENCES evaluation_runs_v2 (result_id)
+    FOREIGN KEY (result_id) REFERENCES evaluation_runs (result_id)
 );
 
-CREATE INDEX IF NOT EXISTS evaluation_runs_v2_dataset_idx
-ON evaluation_runs_v2 (dataset_id);
+CREATE INDEX IF NOT EXISTS evaluation_runs_dataset_idx
+ON evaluation_runs (dataset_id);
 
-CREATE TRIGGER IF NOT EXISTS evaluation_runs_v2_prevent_update
-BEFORE UPDATE ON evaluation_runs_v2 BEGIN
-    SELECT RAISE(ABORT, 'evaluation_runs_v2 is append-only');
+CREATE TRIGGER IF NOT EXISTS evaluation_runs_prevent_update
+BEFORE UPDATE ON evaluation_runs BEGIN
+    SELECT RAISE(ABORT, 'evaluation_runs is append-only');
 END;
-CREATE TRIGGER IF NOT EXISTS evaluation_runs_v2_prevent_delete
-BEFORE DELETE ON evaluation_runs_v2 BEGIN
-    SELECT RAISE(ABORT, 'evaluation_runs_v2 is append-only');
+CREATE TRIGGER IF NOT EXISTS evaluation_runs_prevent_delete
+BEFORE DELETE ON evaluation_runs BEGIN
+    SELECT RAISE(ABORT, 'evaluation_runs is append-only');
 END;
-CREATE TRIGGER IF NOT EXISTS metrics_v2_prevent_update
-BEFORE UPDATE ON metrics_v2 BEGIN
-    SELECT RAISE(ABORT, 'metrics_v2 is append-only');
+CREATE TRIGGER IF NOT EXISTS metrics_prevent_update
+BEFORE UPDATE ON metrics BEGIN
+    SELECT RAISE(ABORT, 'metrics is append-only');
 END;
-CREATE TRIGGER IF NOT EXISTS metrics_v2_prevent_delete
-BEFORE DELETE ON metrics_v2 BEGIN
-    SELECT RAISE(ABORT, 'metrics_v2 is append-only');
+CREATE TRIGGER IF NOT EXISTS metrics_prevent_delete
+BEFORE DELETE ON metrics BEGIN
+    SELECT RAISE(ABORT, 'metrics is append-only');
 END;
 """
 
@@ -239,7 +239,6 @@ def register_evaluation(
     *,
     registry_db_path: str | Path = DEFAULT_REGISTRY_DB,
 ) -> str:
-    """Register metric settings independently from a retrieval pipeline."""
     definition = EvaluationDefinition(_normalise_metric_config(metric_config))
     config_json = _canonical_json(definition.to_dict())
     evaluation_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()
@@ -324,7 +323,6 @@ def register_pipeline(
     bm25_k1: float = 1.5,
     bm25_b: float = 0.75,
 ) -> str:
-    """Register settings that can change rankings and return their stable ID."""
     mount_google_drive()
     definition = _build_pipeline_definition(
         retriever_type=retriever_type,
@@ -496,9 +494,7 @@ def register_loaded_dataset(
                 ).fetchone()[0]
             )
             connection.execute(
-                """
-                INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     dataset_id,
                     dataset_name,
@@ -546,7 +542,7 @@ def result_exists(
 ) -> str | None:
     row = connection.execute(
         """
-        SELECT result_id FROM evaluation_runs_v2
+        SELECT result_id FROM evaluation_runs
         WHERE pipeline_id = ? AND evaluation_id = ? AND dataset_id = ?
         """,
         (pipeline_id, evaluation_id, dataset_id),
@@ -556,7 +552,7 @@ def result_exists(
 
 def get_result_metrics(connection: sqlite3.Connection, result_id: str) -> dict[str, float]:
     rows = connection.execute(
-        "SELECT metric_name, value FROM metrics_v2 WHERE result_id = ? ORDER BY metric_name",
+        "SELECT metric_name, value FROM metrics WHERE result_id = ? ORDER BY metric_name",
         (result_id,),
     ).fetchall()
     if not rows:
@@ -586,7 +582,7 @@ def store_evaluation_result(
     connection.execute("BEGIN IMMEDIATE")
     connection.execute(
         """
-        INSERT INTO evaluation_runs_v2 (
+        INSERT INTO evaluation_runs (
             result_id, pipeline_id, evaluation_id, dataset_id,
             dataset_name, dataset_version, dataset_hash,
             pipeline_config_json, evaluation_config_json,
@@ -609,7 +605,7 @@ def store_evaluation_result(
         ),
     )
     connection.executemany(
-        "INSERT INTO metrics_v2 VALUES (?, ?, ?)",
+        "INSERT INTO metrics VALUES (?, ?, ?)",
         [(result_id, name, float(value)) for name, value in sorted(metrics.items())],
     )
     connection.commit()
