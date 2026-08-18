@@ -129,34 +129,54 @@ def _registered_pipelines(registry_path: Path) -> pd.DataFrame:
 
 
 def _result_tables(results_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    run_tables: list[pd.DataFrame] = []
+    metric_tables: list[pd.DataFrame] = []
+
+    if _table_exists(results_path, "evaluation_runs"):
+        run_tables.append(
+            _read_query(
+                results_path,
+                """
+                SELECT result_id, pipeline_id, 'legacy' AS evaluation_id, dataset_id,
+                       dataset_name, dataset_version, duration_seconds, completed_at
+                FROM evaluation_runs
+                """,
+            )
+        )
+        metric_tables.append(
+            _read_query(
+                results_path,
+                "SELECT result_id, metric_name, value FROM metrics",
+            )
+        )
+
     if _table_exists(results_path, "evaluation_runs_v2"):
-        runs = _read_query(
-            results_path,
-            """
-            SELECT result_id, pipeline_id, evaluation_id, dataset_id,
-                   dataset_name, dataset_version, duration_seconds, completed_at
-            FROM evaluation_runs_v2
-            """,
+        run_tables.append(
+            _read_query(
+                results_path,
+                """
+                SELECT result_id, pipeline_id, evaluation_id, dataset_id,
+                       dataset_name, dataset_version, duration_seconds, completed_at
+                FROM evaluation_runs_v2
+                """,
+            )
         )
-        metrics = _read_query(
-            results_path,
-            "SELECT result_id, metric_name, value FROM metrics_v2",
+        metric_tables.append(
+            _read_query(
+                results_path,
+                "SELECT result_id, metric_name, value FROM metrics_v2",
+            )
         )
-        if not runs.empty:
-            return runs, metrics
-    if not _table_exists(results_path, "evaluation_runs"):
-        return pd.DataFrame(), pd.DataFrame()
-    runs = _read_query(
-        results_path,
-        """
-        SELECT result_id, pipeline_id, 'legacy' AS evaluation_id, dataset_id,
-               dataset_name, dataset_version, duration_seconds, completed_at
-        FROM evaluation_runs
-        """,
+
+    runs = (
+        pd.concat(run_tables, ignore_index=True)
+        if run_tables
+        else pd.DataFrame()
     )
-    metrics = _read_query(
-        results_path,
-        "SELECT result_id, metric_name, value FROM metrics",
+    metrics = (
+        pd.concat(metric_tables, ignore_index=True)
+        if metric_tables
+        else pd.DataFrame()
     )
     return runs, metrics
 
