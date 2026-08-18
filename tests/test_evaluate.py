@@ -129,10 +129,11 @@ class EvaluationRegistryTests(unittest.TestCase):
             registry_db_path=self.registry_path,
         )
         self.assertEqual(first, second)
-        self.assertNotIn("batch_size", registry.get_pipeline(
-            next(registry.open_registry_database(self.registry_path).__enter__() for _ in [0]),
-            first,
-        )[1])
+        with registry.open_registry_database(self.registry_path) as connection:
+            _, config_json = registry.get_pipeline(connection, first)
+        self.assertNotIn("batch_size", config_json)
+        self.assertNotIn("corpus_scan_size", config_json)
+        self.assertNotIn("show_progress_bar", config_json)
 
     def test_metric_settings_have_separate_identity(self) -> None:
         pipeline_id = evaluation.register_pipeline(
