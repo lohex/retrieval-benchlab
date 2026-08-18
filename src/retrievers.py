@@ -86,11 +86,7 @@ class BM25Retriever:
 
         doc_ids = list(corpus)
         tokenized_corpus = [_tokenize(corpus[doc_id]) for doc_id in doc_ids]
-        index = BM25Okapi(
-            tokenized_corpus,
-            k1=self.config.k1,
-            b=self.config.b,
-        )
+        index = BM25Okapi(tokenized_corpus, k1=self.config.k1, b=self.config.b)
         limit = min(top_k, len(doc_ids))
         rankings: dict[str, list[str]] = {}
         for query_id, query in queries.items():
@@ -172,6 +168,22 @@ class DenseRetriever:
             corpus_embeddings = corpus_embeddings / np.clip(corpus_norm, 1e-12, None)
         return query_embeddings, corpus_embeddings
 
+    def _score_block(
+        self,
+        query_embeddings: np.ndarray,
+        corpus_embeddings: np.ndarray,
+    ) -> np.ndarray:
+        if self.config.similarity_metric == "euclidean":
+            return -np.linalg.norm(
+                query_embeddings[:, None, :] - corpus_embeddings[None, :, :],
+                axis=2,
+            )
+        if self.config.similarity_metric == "manhattan":
+            return -np.abs(
+                query_embeddings[:, None, :] - corpus_embeddings[None, :, :]
+            ).sum(axis=2)
+        return query_embeddings @ corpus_embeddings.T
+
     def rank(
         self,
         queries: Mapping[str, str],
@@ -188,23 +200,30 @@ class DenseRetriever:
             corpus_embeddings,
         )
         limit = min(top_k, len(doc_ids))
+        best_scores = np.full((len(query_ids), limit), -np.inf, dtype=np.float32)
+        best_indices = np.full((len(query_ids), limit), -1, dtype=np.int64)
+
+        for start in range(0, len(doc_ids), self.corpus_scan_size):
+            stop = min(start + self.corpus_scan_size, len(doc_ids))
+            scores = self._score_block(query_embeddings, corpus_embeddings[start:stop])
+            block_indices = np.arange(start, stop, dtype=np.int64)
+            candidate_scores = np.concatenate([best_scores, scores], axis=1)
+            candidate_indices = np.concatenate(
+                [
+                    best_indices,
+                    np.broadcast_to(block_indices, (len(query_ids), len(block_indices))),
+                ],
+                axis=1,
+            )
+            keep = np.argpartition(candidate_scores, -limit, axis=1)[:, -limit:]
+            best_scores = np.take_along_axis(candidate_scores, keep, axis=1)
+            best_indices = np.take_along_axis(candidate_indices, keep, axis=1)
+
         rankings: dict[str, list[str]] = {}
-        for start in range(0, len(query_ids), self.corpus_scan_size):
-            stop = min(start + self.corpus_scan_size, len(query_ids))
-            query_block = query_embeddings[start:stop]
-            if self.config.similarity_metric == "euclidean":
-                scores = -np.linalg.norm(
-                    query_block[:, None, :] - corpus_embeddings[None, :, :],
-                    axis=2,
-                )
-            elif self.config.similarity_metric == "manhattan":
-                scores = -np.abs(
-                    query_block[:, None, :] - corpus_embeddings[None, :, :]
-                ).sum(axis=2)
-            else:
-                scores = query_block @ corpus_embeddings.T
-            for offset, row in enumerate(scores):
-                order = np.argsort(-row, kind="stable")[:limit]
-                query_id = query_ids[start + offset]
-                rankings[query_id] = [doc_ids[int(index)] for index in order]
+        for row_index, query_id in enumerate(query_ids):
+            order = np.argsort(-best_scores[row_index], kind="stable")
+            rankings[query_id] = [
+                doc_ids[int(best_indices[row_index, position])]
+                for position in order
+            ]
         return rankings
