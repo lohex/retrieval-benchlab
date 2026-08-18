@@ -18,12 +18,15 @@ from src.evaluation_models import (
     DatasetRecord,
     DatasetRegistration,
     DatasetValidationError,
+    EvaluationDefinition,
+    EvaluationNotFoundError,
     EvaluationRegistryError,
     PipelineDefinition,
     PipelineNotFoundError,
     SimilarityMetric,
 )
 from src.io import load_bioasq_sample, mount_google_drive
+from src.retrievers import RetrieverType
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +42,19 @@ DEFAULT_METRIC_CONFIG: dict[str, tuple[int, ...]] = {
     "map_at_k": (100,),
 }
 
-_RESERVED_EVALUATOR_ARGUMENTS = {
-    "queries",
-    "corpus",
-    "relevant_docs",
-    "corpus_chunk_size",
-    "batch_size",
-    "name",
-    "show_progress_bar",
-    "write_csv",
-    "score_functions",
-    "main_score_function",
-    *DEFAULT_METRIC_CONFIG,
-}
-
 _REGISTRY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS pipelines (
     pipeline_id TEXT PRIMARY KEY,
     pipeline_hash TEXT NOT NULL UNIQUE,
     model_name TEXT NOT NULL,
     similarity_metric TEXT NOT NULL,
+    config_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    evaluation_hash TEXT NOT NULL UNIQUE,
     config_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -82,87 +78,80 @@ CREATE INDEX IF NOT EXISTS datasets_name_version_idx
 ON datasets (dataset_name, version DESC);
 
 CREATE TRIGGER IF NOT EXISTS pipelines_prevent_update
-BEFORE UPDATE ON pipelines
-BEGIN
+BEFORE UPDATE ON pipelines BEGIN
     SELECT RAISE(ABORT, 'pipelines is append-only');
 END;
-
 CREATE TRIGGER IF NOT EXISTS pipelines_prevent_delete
-BEFORE DELETE ON pipelines
-BEGIN
+BEFORE DELETE ON pipelines BEGIN
     SELECT RAISE(ABORT, 'pipelines is append-only');
 END;
-
+CREATE TRIGGER IF NOT EXISTS evaluations_prevent_update
+BEFORE UPDATE ON evaluations BEGIN
+    SELECT RAISE(ABORT, 'evaluations is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS evaluations_prevent_delete
+BEFORE DELETE ON evaluations BEGIN
+    SELECT RAISE(ABORT, 'evaluations is append-only');
+END;
 CREATE TRIGGER IF NOT EXISTS datasets_prevent_update
-BEFORE UPDATE ON datasets
-BEGIN
+BEFORE UPDATE ON datasets BEGIN
     SELECT RAISE(ABORT, 'datasets is append-only');
 END;
-
 CREATE TRIGGER IF NOT EXISTS datasets_prevent_delete
-BEFORE DELETE ON datasets
-BEGIN
+BEFORE DELETE ON datasets BEGIN
     SELECT RAISE(ABORT, 'datasets is append-only');
 END;
 """
 
 _RESULTS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS evaluation_runs (
+CREATE TABLE IF NOT EXISTS evaluation_runs_v2 (
     result_id TEXT PRIMARY KEY,
     pipeline_id TEXT NOT NULL,
+    evaluation_id TEXT NOT NULL,
     dataset_id TEXT NOT NULL,
     dataset_name TEXT NOT NULL,
     dataset_version INTEGER NOT NULL CHECK (dataset_version > 0),
     dataset_hash TEXT NOT NULL,
-    model_name TEXT NOT NULL,
-    similarity_metric TEXT NOT NULL,
     pipeline_config_json TEXT NOT NULL,
+    evaluation_config_json TEXT NOT NULL,
     started_at TEXT NOT NULL,
     completed_at TEXT NOT NULL,
     duration_seconds REAL NOT NULL CHECK (duration_seconds >= 0),
-    UNIQUE (pipeline_id, dataset_id)
+    UNIQUE (pipeline_id, evaluation_id, dataset_id)
 );
 
-CREATE TABLE IF NOT EXISTS metrics (
+CREATE TABLE IF NOT EXISTS metrics_v2 (
     result_id TEXT NOT NULL,
     metric_name TEXT NOT NULL,
     value REAL NOT NULL,
     PRIMARY KEY (result_id, metric_name),
-    FOREIGN KEY (result_id) REFERENCES evaluation_runs (result_id)
+    FOREIGN KEY (result_id) REFERENCES evaluation_runs_v2 (result_id)
 );
 
-CREATE INDEX IF NOT EXISTS evaluation_runs_dataset_idx
-ON evaluation_runs (dataset_id);
+CREATE INDEX IF NOT EXISTS evaluation_runs_v2_dataset_idx
+ON evaluation_runs_v2 (dataset_id);
 
-CREATE TRIGGER IF NOT EXISTS evaluation_runs_prevent_update
-BEFORE UPDATE ON evaluation_runs
-BEGIN
-    SELECT RAISE(ABORT, 'evaluation_runs is append-only');
+CREATE TRIGGER IF NOT EXISTS evaluation_runs_v2_prevent_update
+BEFORE UPDATE ON evaluation_runs_v2 BEGIN
+    SELECT RAISE(ABORT, 'evaluation_runs_v2 is append-only');
 END;
-
-CREATE TRIGGER IF NOT EXISTS evaluation_runs_prevent_delete
-BEFORE DELETE ON evaluation_runs
-BEGIN
-    SELECT RAISE(ABORT, 'evaluation_runs is append-only');
+CREATE TRIGGER IF NOT EXISTS evaluation_runs_v2_prevent_delete
+BEFORE DELETE ON evaluation_runs_v2 BEGIN
+    SELECT RAISE(ABORT, 'evaluation_runs_v2 is append-only');
 END;
-
-CREATE TRIGGER IF NOT EXISTS metrics_prevent_update
-BEFORE UPDATE ON metrics
-BEGIN
-    SELECT RAISE(ABORT, 'metrics is append-only');
+CREATE TRIGGER IF NOT EXISTS metrics_v2_prevent_update
+BEFORE UPDATE ON metrics_v2 BEGIN
+    SELECT RAISE(ABORT, 'metrics_v2 is append-only');
 END;
-
-CREATE TRIGGER IF NOT EXISTS metrics_prevent_delete
-BEFORE DELETE ON metrics
-BEGIN
-    SELECT RAISE(ABORT, 'metrics is append-only');
+CREATE TRIGGER IF NOT EXISTS metrics_v2_prevent_delete
+BEFORE DELETE ON metrics_v2 BEGIN
+    SELECT RAISE(ABORT, 'metrics_v2 is append-only');
 END;
 """
 
 
 def _utc_now() -> str:
-    current_time = datetime.now(timezone.utc)
-    return current_time.isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _canonical_json(value: Any) -> str:
@@ -188,9 +177,7 @@ def _stable_id(prefix: str, *parts: str) -> str:
 
 
 @contextmanager
-def _open_database(
-    database_path: str | Path,
-) -> Iterator[sqlite3.Connection]:
+def _open_database(database_path: str | Path) -> Iterator[sqlite3.Connection]:
     path = Path(database_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=60)
@@ -211,7 +198,6 @@ def _open_database(
 def open_registry_database(
     database_path: str | Path = DEFAULT_REGISTRY_DB,
 ) -> Iterator[sqlite3.Connection]:
-    """Open the registry database and ensure its append-only schema."""
     with _open_database(database_path) as connection:
         connection.executescript(_REGISTRY_SCHEMA)
         yield connection
@@ -221,7 +207,6 @@ def open_registry_database(
 def open_results_database(
     database_path: str | Path = DEFAULT_RESULTS_DB,
 ) -> Iterator[sqlite3.Connection]:
-    """Open the results database and ensure its append-only schema."""
     with _open_database(database_path) as connection:
         connection.executescript(_RESULTS_SCHEMA)
         yield connection
@@ -234,16 +219,13 @@ def _normalise_metric_config(
     if metric_config is not None:
         unknown = set(metric_config).difference(DEFAULT_METRIC_CONFIG)
         if unknown:
-            raise ValueError(
-                f"Unsupported metric configuration keys: {sorted(unknown)}"
-            )
+            raise ValueError(f"Unsupported metric keys: {sorted(unknown)}")
         merged.update(
             {
                 name: tuple(sorted(int(cutoff) for cutoff in cutoffs))
                 for name, cutoffs in metric_config.items()
             }
         )
-
     for name, cutoffs in merged.items():
         if not cutoffs or any(cutoff <= 0 for cutoff in cutoffs):
             raise ValueError(f"{name} must contain positive integer cutoffs")
@@ -252,105 +234,117 @@ def _normalise_metric_config(
     return merged
 
 
+def register_evaluation(
+    metric_config: Mapping[str, Sequence[int]] | None = None,
+    *,
+    registry_db_path: str | Path = DEFAULT_REGISTRY_DB,
+) -> str:
+    """Register metric settings independently from a retrieval pipeline."""
+    definition = EvaluationDefinition(_normalise_metric_config(metric_config))
+    config_json = _canonical_json(definition.to_dict())
+    evaluation_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()
+    evaluation_id = _stable_id("evaluation", evaluation_hash)
+    with open_registry_database(registry_db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            "SELECT evaluation_id FROM evaluations WHERE evaluation_hash = ?",
+            (evaluation_hash,),
+        ).fetchone()
+        if existing is not None:
+            connection.commit()
+            return str(existing["evaluation_id"])
+        connection.execute(
+            "INSERT INTO evaluations VALUES (?, ?, ?, ?)",
+            (evaluation_id, evaluation_hash, config_json, _utc_now()),
+        )
+        connection.commit()
+    return evaluation_id
+
+
 def _build_pipeline_definition(
-    model_name: str,
-    similarity_metric: SimilarityMetric | str,
-    batch_size: int,
-    corpus_chunk_size: int,
-    metric_config: Mapping[str, Sequence[int]] | None,
+    *,
+    retriever_type: RetrieverType | str,
+    model_name: str | None,
+    similarity_metric: SimilarityMetric | str | None,
     model_kwargs: Mapping[str, Any] | None,
-    evaluator_kwargs: Mapping[str, Any] | None,
-    show_progress_bar: bool,
+    query_prompt: str | None,
     embedding_mean: Sequence[float] | None,
+    bm25_k1: float,
+    bm25_b: float,
 ) -> PipelineDefinition:
-    model_name = model_name.strip()
-    if not model_name:
-        raise ValueError("model_name must not be empty")
-    if batch_size <= 0:
-        raise ValueError("batch_size must be positive")
-    if corpus_chunk_size <= 0:
-        raise ValueError("corpus_chunk_size must be positive")
-
-    resolved_model_kwargs = dict(model_kwargs or {})
-    if "device" in resolved_model_kwargs:
-        raise ValueError(
-            "Pass device to evaluate(); it is runtime metadata, not pipeline identity"
+    resolved_type = RetrieverType.parse(retriever_type)
+    if resolved_type is RetrieverType.BM25:
+        if bm25_k1 <= 0:
+            raise ValueError("bm25_k1 must be positive")
+        if not 0 <= bm25_b <= 1:
+            raise ValueError("bm25_b must be between 0 and 1")
+        return PipelineDefinition(
+            retriever_type=resolved_type,
+            bm25_k1=float(bm25_k1),
+            bm25_b=float(bm25_b),
         )
 
-    resolved_evaluator_kwargs = dict(evaluator_kwargs or {})
-    reserved = set(resolved_evaluator_kwargs).intersection(
-        _RESERVED_EVALUATOR_ARGUMENTS
-    )
-    if reserved:
-        raise ValueError(
-            "evaluator_kwargs contains centrally managed arguments: "
-            f"{sorted(reserved)}"
-        )
-
-    resolved_metric = SimilarityMetric.parse(similarity_metric)
-    resolved_embedding_mean: tuple[float, ...] | None = None
+    resolved_model_name = str(model_name or "").strip()
+    if not resolved_model_name:
+        raise ValueError("Dense retrieval requires model_name")
+    resolved_metric = SimilarityMetric.parse(similarity_metric or "cosine")
+    resolved_mean: tuple[float, ...] | None = None
     if embedding_mean is not None:
-        resolved_embedding_mean = tuple(float(value) for value in embedding_mean)
-        if not resolved_embedding_mean:
-            raise ValueError("embedding_mean must not be empty")
-        if not all(math.isfinite(value) for value in resolved_embedding_mean):
-            raise ValueError("embedding_mean must contain only finite values")
-
+        resolved_mean = tuple(float(value) for value in embedding_mean)
+        if not resolved_mean or not all(math.isfinite(value) for value in resolved_mean):
+            raise ValueError("embedding_mean must contain finite values")
     requires_mean = resolved_metric is SimilarityMetric.MEAN_CENTERED_COSINE
-    if requires_mean and resolved_embedding_mean is None:
+    if requires_mean != (resolved_mean is not None):
         raise ValueError(
-            "mean_centered_cosine requires an embedding_mean"
+            "embedding_mean must be supplied exactly for mean_centered_cosine"
         )
-    if not requires_mean and resolved_embedding_mean is not None:
-        raise ValueError(
-            "embedding_mean is only valid for mean_centered_cosine"
-        )
-
-    definition = PipelineDefinition(
-        model_name=model_name,
+    resolved_kwargs = dict(model_kwargs or {})
+    if "device" in resolved_kwargs:
+        raise ValueError("device belongs to RuntimeConfig, not PipelineDefinition")
+    prompt = query_prompt.strip() if query_prompt else None
+    return PipelineDefinition(
+        retriever_type=resolved_type,
+        model_name=resolved_model_name,
         similarity_metric=resolved_metric,
-        batch_size=batch_size,
-        corpus_chunk_size=corpus_chunk_size,
-        metric_config=_normalise_metric_config(metric_config),
-        model_kwargs=resolved_model_kwargs,
-        evaluator_kwargs=resolved_evaluator_kwargs,
-        show_progress_bar=show_progress_bar,
-        embedding_mean=resolved_embedding_mean,
+        model_kwargs=resolved_kwargs,
+        query_prompt=prompt,
+        embedding_mean=resolved_mean,
     )
-    _canonical_json(definition.to_dict())
-    return definition
 
 
 def register_pipeline(
-    model_name: str,
-    similarity_metric: SimilarityMetric | str,
+    model_name: str | None = None,
+    similarity_metric: SimilarityMetric | str | None = None,
     *,
+    retriever_type: RetrieverType | str = RetrieverType.DENSE,
     registry_db_path: str | Path = DEFAULT_REGISTRY_DB,
-    batch_size: int = 64,
-    corpus_chunk_size: int = 10_000,
-    metric_config: Mapping[str, Sequence[int]] | None = None,
     model_kwargs: Mapping[str, Any] | None = None,
-    evaluator_kwargs: Mapping[str, Any] | None = None,
-    show_progress_bar: bool = True,
+    query_prompt: str | None = None,
     embedding_mean: Sequence[float] | None = None,
+    bm25_k1: float = 1.5,
+    bm25_b: float = 0.75,
 ) -> str:
-    """Return the ID of an existing or newly appended pipeline definition."""
+    """Register settings that can change rankings and return their stable ID."""
     mount_google_drive()
     definition = _build_pipeline_definition(
+        retriever_type=retriever_type,
         model_name=model_name,
         similarity_metric=similarity_metric,
-        batch_size=batch_size,
-        corpus_chunk_size=corpus_chunk_size,
-        metric_config=metric_config,
         model_kwargs=model_kwargs,
-        evaluator_kwargs=evaluator_kwargs,
-        show_progress_bar=show_progress_bar,
+        query_prompt=query_prompt,
         embedding_mean=embedding_mean,
+        bm25_k1=bm25_k1,
+        bm25_b=bm25_b,
     )
     config_json = _canonical_json(definition.to_dict())
     pipeline_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()
     pipeline_id = _stable_id("pipeline", pipeline_hash)
-
+    stored_model = definition.model_name or "BM25"
+    stored_similarity = (
+        definition.similarity_metric.value
+        if definition.similarity_metric is not None
+        else "bm25"
+    )
     with open_registry_database(registry_db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
@@ -360,37 +354,52 @@ def register_pipeline(
         if existing is not None:
             connection.commit()
             return str(existing["pipeline_id"])
-
         connection.execute(
             """
             INSERT INTO pipelines (
-                pipeline_id,
-                pipeline_hash,
-                model_name,
-                similarity_metric,
-                config_json,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
+                pipeline_id, pipeline_hash, model_name,
+                similarity_metric, config_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 pipeline_id,
                 pipeline_hash,
-                definition.model_name,
-                definition.similarity_metric.value,
+                stored_model,
+                stored_similarity,
                 config_json,
                 _utc_now(),
             ),
         )
         connection.commit()
-
-    logger.info(
-        "Registered pipeline %s for model=%s, similarity=%s",
-        pipeline_id,
-        definition.model_name,
-        definition.similarity_metric.value,
-    )
     return pipeline_id
+
+
+def get_pipeline(
+    connection: sqlite3.Connection,
+    pipeline_id: str,
+) -> tuple[PipelineDefinition, str]:
+    row = connection.execute(
+        "SELECT config_json FROM pipelines WHERE pipeline_id = ?",
+        (pipeline_id,),
+    ).fetchone()
+    if row is None:
+        raise PipelineNotFoundError(f"Unknown pipeline_id: {pipeline_id}")
+    config_json = str(row["config_json"])
+    return PipelineDefinition.from_dict(json.loads(config_json)), config_json
+
+
+def get_evaluation(
+    connection: sqlite3.Connection,
+    evaluation_id: str,
+) -> tuple[EvaluationDefinition, str]:
+    row = connection.execute(
+        "SELECT config_json FROM evaluations WHERE evaluation_id = ?",
+        (evaluation_id,),
+    ).fetchone()
+    if row is None:
+        raise EvaluationNotFoundError(f"Unknown evaluation_id: {evaluation_id}")
+    config_json = str(row["config_json"])
+    return EvaluationDefinition.from_dict(json.loads(config_json)), config_json
 
 
 def _update_hash_text(digest: Any, value: str) -> None:
@@ -401,23 +410,19 @@ def _update_hash_text(digest: Any, value: str) -> None:
 
 def _hash_dataset_content(sample: BioASQSample) -> str:
     digest = hashlib.sha256()
-
     _update_hash_text(digest, "queries")
     for query_id in sorted(sample.queries):
         _update_hash_text(digest, query_id)
         _update_hash_text(digest, sample.queries[query_id])
-
     _update_hash_text(digest, "relevant_docs")
     for query_id in sorted(sample.relevant_docs):
         _update_hash_text(digest, query_id)
         for document_id in sorted(sample.relevant_docs[query_id]):
             _update_hash_text(digest, document_id)
-
     _update_hash_text(digest, "corpus")
     for document_id in sorted(sample.corpus):
         _update_hash_text(digest, document_id)
         _update_hash_text(digest, sample.corpus[document_id])
-
     return digest.hexdigest()
 
 
@@ -431,15 +436,11 @@ def _dataset_record_from_row(row: sqlite3.Row) -> DatasetRecord:
     )
 
 
-def _select_dataset_record(
-    connection: sqlite3.Connection,
-    dataset_id: str,
-) -> DatasetRecord:
+def _select_dataset_record(connection: sqlite3.Connection, dataset_id: str) -> DatasetRecord:
     row = connection.execute(
         """
         SELECT dataset_id, dataset_name, version, content_hash, source_path
-        FROM datasets
-        WHERE dataset_id = ?
+        FROM datasets WHERE dataset_id = ?
         """,
         (dataset_id,),
     ).fetchone()
@@ -455,10 +456,7 @@ def _select_latest_dataset_record(
     row = connection.execute(
         """
         SELECT dataset_id, dataset_name, version, content_hash, source_path
-        FROM datasets
-        WHERE dataset_name = ?
-        ORDER BY version DESC
-        LIMIT 1
+        FROM datasets WHERE dataset_name = ? ORDER BY version DESC LIMIT 1
         """,
         (dataset_name,),
     ).fetchone()
@@ -473,13 +471,9 @@ def register_loaded_dataset(
     *,
     registry_db_path: str | Path = DEFAULT_REGISTRY_DB,
 ) -> DatasetRegistration:
-    """Append a loaded dataset version and return current and latest records."""
     resolved_path = Path(dataset_path).resolve()
     if not resolved_path.is_dir():
-        raise DatasetValidationError(
-            f"Dataset directory does not exist: {resolved_path}"
-        )
-
+        raise DatasetValidationError(f"Dataset directory does not exist: {resolved_path}")
     dataset_name = resolved_path.name
     content_hash = _hash_dataset_content(sample)
     dataset_id = _stable_id("dataset", dataset_name, content_hash)
@@ -488,42 +482,22 @@ def register_loaded_dataset(
         for key, value in sample.metadata.items()
         if key not in {"queries", "relevant_docs"}
     }
-
     with open_registry_database(registry_db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
-            """
-            SELECT dataset_id
-            FROM datasets
-            WHERE dataset_name = ? AND content_hash = ?
-            """,
+            "SELECT dataset_id FROM datasets WHERE dataset_name = ? AND content_hash = ?",
             (dataset_name, content_hash),
         ).fetchone()
         if existing is None:
-            version_row = connection.execute(
-                """
-                SELECT COALESCE(MAX(version), 0) + 1 AS next_version
-                FROM datasets
-                WHERE dataset_name = ?
-                """,
-                (dataset_name,),
-            ).fetchone()
-            version = int(version_row["next_version"])
+            version = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(version), 0) + 1 FROM datasets WHERE dataset_name = ?",
+                    (dataset_name,),
+                ).fetchone()[0]
+            )
             connection.execute(
                 """
-                INSERT INTO datasets (
-                    dataset_id,
-                    dataset_name,
-                    version,
-                    content_hash,
-                    source_path,
-                    n_queries,
-                    n_documents,
-                    n_relevance_relations,
-                    metadata_json,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dataset_id,
@@ -533,27 +507,16 @@ def register_loaded_dataset(
                     str(resolved_path),
                     len(sample.queries),
                     len(sample.corpus),
-                    sum(
-                        len(document_ids)
-                        for document_ids in sample.relevant_docs.values()
-                    ),
+                    sum(len(ids) for ids in sample.relevant_docs.values()),
                     _canonical_json(stored_metadata),
                     _utc_now(),
                 ),
             )
-            logger.info(
-                "Registered dataset %s as %s version %d",
-                dataset_id,
-                dataset_name,
-                version,
-            )
         else:
             dataset_id = str(existing["dataset_id"])
-
         current = _select_dataset_record(connection, dataset_id)
         latest = _select_latest_dataset_record(connection, dataset_name)
         connection.commit()
-
     return DatasetRegistration(current=current, latest=latest)
 
 
@@ -562,146 +525,92 @@ def register_dataset(
     *,
     registry_db_path: str | Path = DEFAULT_REGISTRY_DB,
 ) -> str:
-    """Validate and append one semantic BioASQ dataset version if necessary."""
     mount_google_drive()
     path = Path(dataset_path)
     try:
         sample = load_bioasq_sample(path)
     except Exception as error:
-        raise DatasetValidationError(
-            f"Could not load BioASQ dataset at {path}"
-        ) from error
-
-    registration = register_loaded_dataset(
+        raise DatasetValidationError(f"Could not load BioASQ dataset at {path}") from error
+    return register_loaded_dataset(
         path,
         sample,
         registry_db_path=registry_db_path,
-    )
-    return registration.current.dataset_id
-
-
-def get_pipeline(
-    connection: sqlite3.Connection,
-    pipeline_id: str,
-) -> tuple[PipelineDefinition, str]:
-    """Load a pipeline definition and its canonical stored JSON."""
-    row = connection.execute(
-        """
-        SELECT config_json
-        FROM pipelines
-        WHERE pipeline_id = ?
-        """,
-        (pipeline_id,),
-    ).fetchone()
-    if row is None:
-        raise PipelineNotFoundError(f"Unknown pipeline_id: {pipeline_id}")
-
-    config_json = str(row["config_json"])
-    definition = PipelineDefinition.from_dict(json.loads(config_json))
-    return definition, config_json
+    ).current.dataset_id
 
 
 def result_exists(
     connection: sqlite3.Connection,
     pipeline_id: str,
+    evaluation_id: str,
     dataset_id: str,
 ) -> str | None:
-    """Return an existing result ID for one pipeline and dataset."""
     row = connection.execute(
         """
-        SELECT result_id
-        FROM evaluation_runs
-        WHERE pipeline_id = ? AND dataset_id = ?
+        SELECT result_id FROM evaluation_runs_v2
+        WHERE pipeline_id = ? AND evaluation_id = ? AND dataset_id = ?
         """,
-        (pipeline_id, dataset_id),
+        (pipeline_id, evaluation_id, dataset_id),
     ).fetchone()
     return None if row is None else str(row["result_id"])
 
 
-def get_result_metrics(
-    connection: sqlite3.Connection,
-    result_id: str,
-) -> dict[str, float]:
-    """Load all stored metrics belonging to one evaluation result."""
+def get_result_metrics(connection: sqlite3.Connection, result_id: str) -> dict[str, float]:
     rows = connection.execute(
-        """
-        SELECT metric_name, value
-        FROM metrics
-        WHERE result_id = ?
-        ORDER BY metric_name
-        """,
+        "SELECT metric_name, value FROM metrics_v2 WHERE result_id = ? ORDER BY metric_name",
         (result_id,),
     ).fetchall()
     if not rows:
-        raise EvaluationRegistryError(
-            f"Result {result_id!r} has no stored metrics"
-        )
-    return {
-        str(row["metric_name"]): float(row["value"])
-        for row in rows
-    }
+        raise EvaluationRegistryError(f"Result {result_id!r} has no stored metrics")
+    return {str(row["metric_name"]): float(row["value"]) for row in rows}
 
 
 def store_evaluation_result(
     connection: sqlite3.Connection,
+    *,
     pipeline_id: str,
+    evaluation_id: str,
     pipeline_config_json: str,
-    definition: PipelineDefinition,
+    evaluation_config_json: str,
     dataset_record: DatasetRecord,
     started_at: str,
     completed_at: str,
     duration_seconds: float,
     metrics: Mapping[str, float],
 ) -> str:
-    """Atomically append one evaluation run and all of its metrics."""
     result_id = _stable_id(
         "result",
         pipeline_id,
+        evaluation_id,
         dataset_record.dataset_id,
     )
     connection.execute("BEGIN IMMEDIATE")
     connection.execute(
         """
-        INSERT INTO evaluation_runs (
-            result_id,
-            pipeline_id,
-            dataset_id,
-            dataset_name,
-            dataset_version,
-            dataset_hash,
-            model_name,
-            similarity_metric,
-            pipeline_config_json,
-            started_at,
-            completed_at,
-            duration_seconds
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO evaluation_runs_v2 (
+            result_id, pipeline_id, evaluation_id, dataset_id,
+            dataset_name, dataset_version, dataset_hash,
+            pipeline_config_json, evaluation_config_json,
+            started_at, completed_at, duration_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             result_id,
             pipeline_id,
+            evaluation_id,
             dataset_record.dataset_id,
             dataset_record.dataset_name,
             dataset_record.version,
             dataset_record.content_hash,
-            definition.model_name,
-            definition.similarity_metric.value,
             pipeline_config_json,
+            evaluation_config_json,
             started_at,
             completed_at,
             duration_seconds,
         ),
     )
     connection.executemany(
-        """
-        INSERT INTO metrics (result_id, metric_name, value)
-        VALUES (?, ?, ?)
-        """,
-        [
-            (result_id, metric_name, value)
-            for metric_name, value in sorted(metrics.items())
-        ],
+        "INSERT INTO metrics_v2 VALUES (?, ?, ?)",
+        [(result_id, name, float(value)) for name, value in sorted(metrics.items())],
     )
     connection.commit()
     return result_id
