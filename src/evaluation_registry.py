@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -13,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.embedding_transforms import EmbeddingTransformConfig
 from src.evaluation_models import (
     BioASQSample,
     DatasetRecord,
@@ -267,7 +267,7 @@ def _build_pipeline_definition(
     similarity_metric: SimilarityMetric | str | None,
     model_kwargs: Mapping[str, Any] | None,
     query_prompt: str | None,
-    embedding_mean: Sequence[float] | None,
+    embedding_transform: EmbeddingTransformConfig | None,
     bm25_k1: float,
     bm25_b: float,
 ) -> PipelineDefinition:
@@ -277,6 +277,8 @@ def _build_pipeline_definition(
             raise ValueError("bm25_k1 must be positive")
         if not 0 <= bm25_b <= 1:
             raise ValueError("bm25_b must be between 0 and 1")
+        if embedding_transform is not None:
+            raise ValueError("BM25 does not accept an embedding transform")
         return PipelineDefinition(
             retriever_type=resolved_type,
             bm25_k1=float(bm25_k1),
@@ -287,27 +289,18 @@ def _build_pipeline_definition(
     if not resolved_model_name:
         raise ValueError("Dense retrieval requires model_name")
     resolved_metric = SimilarityMetric.parse(similarity_metric or "cosine")
-    resolved_mean: tuple[float, ...] | None = None
-    if embedding_mean is not None:
-        resolved_mean = tuple(float(value) for value in embedding_mean)
-        if not resolved_mean or not all(math.isfinite(value) for value in resolved_mean):
-            raise ValueError("embedding_mean must contain finite values")
-    requires_mean = resolved_metric is SimilarityMetric.MEAN_CENTERED_COSINE
-    if requires_mean != (resolved_mean is not None):
-        raise ValueError(
-            "embedding_mean must be supplied exactly for mean_centered_cosine"
-        )
     resolved_kwargs = dict(model_kwargs or {})
     if "device" in resolved_kwargs:
         raise ValueError("device belongs to RuntimeConfig, not PipelineDefinition")
     prompt = query_prompt.strip() if query_prompt else None
+    transform = embedding_transform or EmbeddingTransformConfig()
     return PipelineDefinition(
         retriever_type=resolved_type,
         model_name=resolved_model_name,
         similarity_metric=resolved_metric,
         model_kwargs=resolved_kwargs,
         query_prompt=prompt,
-        embedding_mean=resolved_mean,
+        embedding_transform=transform,
     )
 
 
@@ -319,10 +312,11 @@ def register_pipeline(
     registry_db_path: str | Path = DEFAULT_REGISTRY_DB,
     model_kwargs: Mapping[str, Any] | None = None,
     query_prompt: str | None = None,
-    embedding_mean: Sequence[float] | None = None,
+    embedding_transform: EmbeddingTransformConfig | None = None,
     bm25_k1: float = 1.5,
     bm25_b: float = 0.75,
 ) -> str:
+    """Register settings that can change rankings and return their stable ID."""
     mount_google_drive()
     definition = _build_pipeline_definition(
         retriever_type=retriever_type,
@@ -330,7 +324,7 @@ def register_pipeline(
         similarity_metric=similarity_metric,
         model_kwargs=model_kwargs,
         query_prompt=query_prompt,
-        embedding_mean=embedding_mean,
+        embedding_transform=embedding_transform,
         bm25_k1=bm25_k1,
         bm25_b=bm25_b,
     )
