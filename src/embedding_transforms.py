@@ -9,13 +9,12 @@ import numpy as np
 
 
 class EmbeddingTransformType(str, Enum):
-    """Ranking-relevant transformations applied to dense embeddings."""
+    """Corpus-wide transformations applied to dense embeddings."""
 
     IDENTITY = "identity"
     MEAN_CENTER = "mean_center"
     VARIANCE_NORMALIZE = "variance_normalize"
     Z_NORMALIZE = "z_normalize"
-    QUERY_ADAPTED_Z = "query_adapted_z"
 
     @classmethod
     def parse(cls, value: EmbeddingTransformType | str) -> EmbeddingTransformType:
@@ -68,18 +67,15 @@ class CalibrationStatistics:
 
 @dataclass(frozen=True)
 class EmbeddingTransformConfig:
-    """Configuration for an embedding-space transformation."""
+    """Ranking-relevant configuration for a corpus-wide embedding transform."""
 
     transform_type: EmbeddingTransformType = EmbeddingTransformType.IDENTITY
     calibration: CalibrationStatistics | None = None
     epsilon: float = 1e-6
-    alpha: float = 1.0
 
     def __post_init__(self) -> None:
         if self.epsilon <= 0:
             raise ValueError("epsilon must be positive")
-        if self.alpha < 0:
-            raise ValueError("alpha must be non-negative")
         needs_calibration = self.transform_type is not EmbeddingTransformType.IDENTITY
         if needs_calibration != (self.calibration is not None):
             raise ValueError(
@@ -87,9 +83,7 @@ class EmbeddingTransformConfig:
             )
 
     def to_dict(self) -> dict[str, object]:
-        value: dict[str, object] = {
-            "transform_type": self.transform_type.value,
-        }
+        value: dict[str, object] = {"transform_type": self.transform_type.value}
         if self.transform_type is EmbeddingTransformType.IDENTITY:
             return value
         value.update(
@@ -98,8 +92,6 @@ class EmbeddingTransformConfig:
                 "epsilon": self.epsilon,
             }
         )
-        if self.transform_type is EmbeddingTransformType.QUERY_ADAPTED_Z:
-            value["alpha"] = self.alpha
         return value
 
     @classmethod
@@ -107,12 +99,10 @@ class EmbeddingTransformConfig:
         transform_type = EmbeddingTransformType.parse(value["transform_type"])
         if transform_type is EmbeddingTransformType.IDENTITY:
             return cls(transform_type=transform_type)
-        calibration = CalibrationStatistics.from_dict(dict(value["calibration"]))
         return cls(
             transform_type=transform_type,
-            calibration=calibration,
+            calibration=CalibrationStatistics.from_dict(dict(value["calibration"])),
             epsilon=float(value["epsilon"]),
-            alpha=float(value.get("alpha", 1.0)),
         )
 
 
@@ -125,9 +115,7 @@ def _calibration_arrays(
     mean = np.asarray(config.calibration.mean, dtype=np.float32)
     std = np.asarray(config.calibration.std, dtype=np.float32)
     if mean.shape != (embedding_dim,) or std.shape != (embedding_dim,):
-        raise ValueError(
-            "Calibration statistics do not match embedding dimensionality"
-        )
+        raise ValueError("Calibration statistics do not match embedding dimensionality")
     return mean, np.maximum(std, np.float32(config.epsilon))
 
 
@@ -136,7 +124,7 @@ def transform_embeddings(
     document_embeddings: np.ndarray,
     config: EmbeddingTransformConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Apply one ranking-relevant transformation to query and document embeddings."""
+    """Apply one corpus-wide transformation to query and document embeddings."""
     if query_embeddings.ndim != 2 or document_embeddings.ndim != 2:
         raise ValueError("Embedding matrices must be two-dimensional")
     if query_embeddings.shape[1] != document_embeddings.shape[1]:
@@ -150,13 +138,6 @@ def transform_embeddings(
         return query_embeddings - mean, document_embeddings - mean
     if transform_type is EmbeddingTransformType.VARIANCE_NORMALIZE:
         return query_embeddings / std, document_embeddings / std
-
-    queries = (query_embeddings - mean) / std
-    documents = (document_embeddings - mean) / std
     if transform_type is EmbeddingTransformType.Z_NORMALIZE:
-        return queries, documents
-    if transform_type is EmbeddingTransformType.QUERY_ADAPTED_Z:
-        weights = np.abs(queries) ** np.float32(config.alpha)
-        scale = np.sqrt(weights)
-        return queries * scale, documents[None, :, :] * scale[:, None, :]
+        return (query_embeddings - mean) / std, (document_embeddings - mean) / std
     raise ValueError(f"Unhandled embedding transform: {transform_type.value}")
