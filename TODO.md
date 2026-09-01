@@ -2,15 +2,15 @@
 
 ## 1. Refactor embedding transformations before splitting notebooks
 
-- [ ] Introduce an explicit embedding-transformation layer between dense encoding and similarity scoring:
+- [x] Introduce an explicit embedding-transformation layer between dense encoding and similarity scoring:
   - `raw embeddings -> embedding transform -> similarity`
   - Keep `DenseRetriever` responsible for encoding and ranking rather than accumulating transformation-specific branches.
   - Represent the selected transformation and all ranking-relevant transformation parameters in `PipelineDefinition` so pipeline identity changes whenever the scoring geometry changes.
-- [ ] Generalize calibration support from a mean-only helper to reusable per-dimension calibration statistics:
+- [x] Generalize calibration support from a mean-only helper to reusable per-dimension calibration statistics:
   - estimate `mu` and `sigma` from raw, non-L2-normalized document embeddings of a fixed calibration corpus that is disjoint from evaluation datasets;
   - use an epsilon floor for very small `sigma` values;
   - make the calibration source/identity and transformation parameters reproducible and ranking-relevant.
-- [ ] Keep standard cosine as the identity/no-op transform so the same dense-retrieval path supports both unmodified baselines and later embedding-space ablations.
+- [x] Keep standard cosine as the identity/no-op transform so the same dense-retrieval path supports both unmodified baselines and later embedding-space ablations.
 
 ## 2. Split the evaluation workflow into two notebooks
 
