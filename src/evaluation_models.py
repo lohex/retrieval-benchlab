@@ -66,8 +66,6 @@ class EvaluationStatus(str, Enum):
 
 @dataclass(frozen=True)
 class BioASQSample:
-    """Loaded and validated BioASQ retrieval sample."""
-
     queries: dict[str, str]
     relevant_docs: dict[str, set[str]]
     corpus: dict[str, str]
@@ -76,8 +74,6 @@ class BioASQSample:
 
 @dataclass(frozen=True)
 class CalibrationSet:
-    """Documents and provenance used for model-specific preprocessing."""
-
     corpus: dict[str, str]
     metadata: dict[str, Any]
 
@@ -92,6 +88,7 @@ class PipelineDefinition:
     model_kwargs: dict[str, Any] | None = None
     query_prompt: str | None = None
     embedding_transform: EmbeddingTransformConfig = EmbeddingTransformConfig()
+    query_weight_alpha: float | None = None
     bm25_k1: float = 1.5
     bm25_b: float = 0.75
 
@@ -101,14 +98,11 @@ class PipelineDefinition:
             config.update(
                 {
                     "model_name": self.model_name,
-                    "similarity_metric": (
-                        self.similarity_metric.value
-                        if self.similarity_metric is not None
-                        else None
-                    ),
+                    "similarity_metric": self.similarity_metric.value if self.similarity_metric is not None else None,
                     "model_kwargs": self.model_kwargs or {},
                     "query_prompt": self.query_prompt,
                     "embedding_transform": self.embedding_transform.to_dict(),
+                    "query_weight_alpha": self.query_weight_alpha,
                 }
             )
         else:
@@ -129,21 +123,18 @@ class PipelineDefinition:
             model_name=str(value["model_name"]),
             similarity_metric=SimilarityMetric.parse(value["similarity_metric"]),
             model_kwargs=dict(value["model_kwargs"]),
-            query_prompt=(
-                str(value["query_prompt"])
-                if value["query_prompt"] is not None
+            query_prompt=str(value["query_prompt"]) if value["query_prompt"] is not None else None,
+            embedding_transform=EmbeddingTransformConfig.from_dict(dict(value["embedding_transform"])),
+            query_weight_alpha=(
+                float(value["query_weight_alpha"])
+                if value.get("query_weight_alpha") is not None
                 else None
-            ),
-            embedding_transform=EmbeddingTransformConfig.from_dict(
-                dict(value["embedding_transform"])
             ),
         )
 
 
 @dataclass(frozen=True)
 class EvaluationDefinition:
-    """Immutable metric configuration independent of the retriever."""
-
     metric_config: dict[str, tuple[int, ...]]
 
     def to_dict(self) -> dict[str, Any]:
@@ -161,8 +152,6 @@ class EvaluationDefinition:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    """Execution-only settings that never affect benchmark identities."""
-
     batch_size: int = 64
     corpus_scan_size: int = 10_000
     show_progress_bar: bool = True
@@ -171,8 +160,6 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class DatasetRecord:
-    """Identity and provenance of one registered dataset version."""
-
     dataset_id: str
     dataset_name: str
     version: int
@@ -182,16 +169,12 @@ class DatasetRecord:
 
 @dataclass(frozen=True)
 class DatasetRegistration:
-    """Current dataset identity and the latest identity with the same name."""
-
     current: DatasetRecord
     latest: DatasetRecord
 
 
 @dataclass(frozen=True)
 class EvaluationOutcome:
-    """Result or skip reason for one registered dataset."""
-
     dataset_id: str
     dataset_name: str
     dataset_version: int
