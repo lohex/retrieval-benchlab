@@ -10,7 +10,11 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from src.embedding_transforms import EmbeddingTransformConfig, transform_embeddings
+from src.embedding_transforms import (
+    EmbeddingTransformConfig,
+    EmbeddingTransformType,
+    transform_embeddings,
+)
 
 
 class RetrieverType(str, Enum):
@@ -54,6 +58,17 @@ class DenseRetrieverConfig:
     model_kwargs: dict[str, Any] | None = None
     query_prompt: str | None = None
     embedding_transform: EmbeddingTransformConfig = EmbeddingTransformConfig()
+    query_weight_alpha: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.query_weight_alpha is None:
+            return
+        if self.query_weight_alpha < 0:
+            raise ValueError("query_weight_alpha must be non-negative")
+        if self.similarity_metric != "cosine":
+            raise ValueError("Query-adapted weighting requires cosine similarity")
+        if self.embedding_transform.transform_type is not EmbeddingTransformType.Z_NORMALIZE:
+            raise ValueError("Query-adapted weighting requires z-normalized embeddings")
 
 
 @dataclass(frozen=True)
@@ -166,16 +181,32 @@ class DenseRetriever:
             corpus_embeddings,
             self.config.embedding_transform,
         )
-        if self.config.similarity_metric == "cosine":
+        if self.config.similarity_metric == "cosine" and self.config.query_weight_alpha is None:
             query_embeddings = self._l2_normalize(query_embeddings)
             corpus_embeddings = self._l2_normalize(corpus_embeddings)
         return query_embeddings, corpus_embeddings
+
+    def _weighted_cosine_block(
+        self,
+        query_embeddings: np.ndarray,
+        corpus_embeddings: np.ndarray,
+    ) -> np.ndarray:
+        if self.config.query_weight_alpha is None:
+            raise ValueError("query_weight_alpha is required for weighted cosine")
+        weights = np.abs(query_embeddings) ** np.float32(self.config.query_weight_alpha)
+        numerator = (query_embeddings * weights) @ corpus_embeddings.T
+        query_norm = np.sqrt(np.sum(weights * query_embeddings**2, axis=1))
+        corpus_norm = np.sqrt(weights @ (corpus_embeddings**2).T)
+        denominator = query_norm[:, None] * corpus_norm
+        return numerator / np.clip(denominator, 1e-12, None)
 
     def _score_block(
         self,
         query_embeddings: np.ndarray,
         corpus_embeddings: np.ndarray,
     ) -> np.ndarray:
+        if self.config.query_weight_alpha is not None:
+            return self._weighted_cosine_block(query_embeddings, corpus_embeddings)
         if self.config.similarity_metric == "euclidean":
             return -np.linalg.norm(
                 query_embeddings[:, None, :] - corpus_embeddings[None, :, :],
