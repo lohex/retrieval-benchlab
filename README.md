@@ -25,7 +25,7 @@ src/
   evaluation_registry.py  Append-only SQLite registry and result persistence
   evaluate.py             Shared retrieval evaluation orchestration
   reporting.py            Read-only dataset and pipeline report tables
-TODO.md                    Planned evaluation and retrieval extensions
+TODO.md                    Planned retrieval and full-text extensions
 ```
 
 ## Workflow
