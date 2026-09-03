@@ -10,6 +10,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from src.embedding_transforms import EmbeddingTransformConfig, transform_embeddings
+
 
 class RetrieverType(str, Enum):
     """Retrieval backends supported by the benchmark."""
@@ -51,7 +53,7 @@ class DenseRetrieverConfig:
     similarity_metric: str = "cosine"
     model_kwargs: dict[str, Any] | None = None
     query_prompt: str | None = None
-    embedding_mean: tuple[float, ...] | None = None
+    embedding_transform: EmbeddingTransformConfig = EmbeddingTransformConfig()
 
 
 @dataclass(frozen=True)
@@ -97,7 +99,7 @@ class BM25Retriever:
 
 
 class DenseRetriever:
-    """Sentence-Transformers dense retriever with optional query instructions."""
+    """Sentence-Transformers dense retriever with optional embedding transforms."""
 
     def __init__(
         self,
@@ -149,23 +151,24 @@ class DenseRetriever:
             dtype=np.float32,
         )
 
+    @staticmethod
+    def _l2_normalize(embeddings: np.ndarray) -> np.ndarray:
+        norm = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        return embeddings / np.clip(norm, 1e-12, None)
+
     def _prepare_embeddings(
         self,
         query_embeddings: np.ndarray,
         corpus_embeddings: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        metric = self.config.similarity_metric
-        if metric == "mean_centered_cosine":
-            if self.config.embedding_mean is None:
-                raise ValueError("mean_centered_cosine requires embedding_mean")
-            mean = np.asarray(self.config.embedding_mean, dtype=np.float32)
-            query_embeddings = query_embeddings - mean
-            corpus_embeddings = corpus_embeddings - mean
-        if metric in {"cosine", "mean_centered_cosine"}:
-            query_norm = np.linalg.norm(query_embeddings, axis=1, keepdims=True)
-            corpus_norm = np.linalg.norm(corpus_embeddings, axis=1, keepdims=True)
-            query_embeddings = query_embeddings / np.clip(query_norm, 1e-12, None)
-            corpus_embeddings = corpus_embeddings / np.clip(corpus_norm, 1e-12, None)
+        query_embeddings, corpus_embeddings = transform_embeddings(
+            query_embeddings,
+            corpus_embeddings,
+            self.config.embedding_transform,
+        )
+        if self.config.similarity_metric == "cosine":
+            query_embeddings = self._l2_normalize(query_embeddings)
+            corpus_embeddings = self._l2_normalize(corpus_embeddings)
         return query_embeddings, corpus_embeddings
 
     def _score_block(

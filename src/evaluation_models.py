@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from src.embedding_transforms import EmbeddingTransformConfig
 from src.retrievers import RetrieverType
 
 
@@ -30,7 +31,6 @@ class SimilarityMetric(str, Enum):
     """Similarity functions supported by dense retrieval pipelines."""
 
     COSINE = "cosine"
-    MEAN_CENTERED_COSINE = "mean_centered_cosine"
     DOT = "dot"
     EUCLIDEAN = "euclidean"
     MANHATTAN = "manhattan"
@@ -42,8 +42,6 @@ class SimilarityMetric(str, Enum):
         aliases = {
             "cos": cls.COSINE,
             "cosine": cls.COSINE,
-            "centered_cosine": cls.MEAN_CENTERED_COSINE,
-            "mean_centered_cosine": cls.MEAN_CENTERED_COSINE,
             "dot": cls.DOT,
             "dot_product": cls.DOT,
             "euclidean": cls.EUCLIDEAN,
@@ -93,14 +91,12 @@ class PipelineDefinition:
     similarity_metric: SimilarityMetric | None = None
     model_kwargs: dict[str, Any] | None = None
     query_prompt: str | None = None
-    embedding_mean: tuple[float, ...] | None = None
+    embedding_transform: EmbeddingTransformConfig = EmbeddingTransformConfig()
     bm25_k1: float = 1.5
     bm25_b: float = 0.75
 
     def to_dict(self) -> dict[str, Any]:
-        config: dict[str, Any] = {
-            "retriever_type": self.retriever_type.value,
-        }
+        config: dict[str, Any] = {"retriever_type": self.retriever_type.value}
         if self.retriever_type is RetrieverType.DENSE:
             config.update(
                 {
@@ -112,10 +108,9 @@ class PipelineDefinition:
                     ),
                     "model_kwargs": self.model_kwargs or {},
                     "query_prompt": self.query_prompt,
+                    "embedding_transform": self.embedding_transform.to_dict(),
                 }
             )
-            if self.embedding_mean is not None:
-                config["embedding_mean"] = self.embedding_mean
         else:
             config.update({"bm25_k1": self.bm25_k1, "bm25_b": self.bm25_b})
         return config
@@ -139,10 +134,8 @@ class PipelineDefinition:
                 if value["query_prompt"] is not None
                 else None
             ),
-            embedding_mean=(
-                tuple(float(item) for item in value["embedding_mean"])
-                if "embedding_mean" in value
-                else None
+            embedding_transform=EmbeddingTransformConfig.from_dict(
+                dict(value["embedding_transform"])
             ),
         )
 

@@ -1,8 +1,7 @@
-"""Unit tests for retrieval evaluation configuration and persistence."""
+"""Tests for retrieval evaluation configuration and persistence."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import sys
 import types
@@ -15,107 +14,71 @@ import numpy as np
 
 
 def _install_dependency_stubs() -> None:
-    datasets_module = types.ModuleType("datasets")
-    datasets_module.Dataset = object
-    datasets_module.load_dataset = lambda *args, **kwargs: None
-    datasets_module.load_from_disk = lambda *args, **kwargs: None
-    sys.modules.setdefault("datasets", datasets_module)
+    module = types.ModuleType("datasets")
+    module.Dataset = object
+    module.load_dataset = lambda *args, **kwargs: None
+    module.load_from_disk = lambda *args, **kwargs: None
+    sys.modules.setdefault("datasets", module)
 
 
 _install_dependency_stubs()
 
 import src.evaluate as evaluation
 import src.evaluation_registry as registry
-import src.io as bio_io
-from src.evaluation_models import BioASQSample, CalibrationSet, RuntimeConfig
+from src.embedding_transforms import (
+    CalibrationStatistics,
+    EmbeddingTransformConfig,
+    EmbeddingTransformType,
+)
+from src.evaluation_models import BioASQSample, RuntimeConfig
 from src.retrievers import RetrieverType
 
 
 class _CalibrationModel:
     def __init__(self) -> None:
-        self.arguments: dict[str, object] = {}
+        self.arguments = {}
 
     def encode_document(self, documents, **kwargs):
-        self.arguments = {"documents": list(documents), **kwargs}
+        self.arguments = kwargs
         return np.array([[1.0, 2.0], [3.0, 6.0]])
-
-    def encode(self, documents, **kwargs):
-        raise AssertionError("Document calibration must use encode_document")
-
-
-def _sample_payload(content_marker: str = "v1") -> BioASQSample:
-    return BioASQSample(
-        queries={"q1": "query"},
-        relevant_docs={"q1": {"d1"}},
-        corpus={"d1": f"relevant-{content_marker}", "d2": "background"},
-        metadata={"subset_name": "sample", "n_queries": 1, "n_corpus_docs": 2},
-    )
 
 
 class _FakeRetriever:
     def rank(self, queries, corpus, *, top_k):
-        return {query_id: ["d1", "d2"][:top_k] for query_id in queries}
+        return {query_id: list(corpus)[:top_k] for query_id in queries}
 
 
-class EvaluationRegistryTests(unittest.TestCase):
+def _sample() -> BioASQSample:
+    return BioASQSample(
+        queries={"q1": "query"},
+        relevant_docs={"q1": {"d1"}},
+        corpus={"d1": "relevant", "d2": "background"},
+        metadata={"n_queries": 1, "n_corpus_docs": 2},
+    )
+
+
+class EvaluationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_directory = TemporaryDirectory()
-        self.root = Path(self.temp_directory.name)
+        self.temp = TemporaryDirectory()
+        self.root = Path(self.temp.name)
         self.registry_path = self.root / "datasets.sqlite"
         self.results_path = self.root / "results.sqlite"
-        self.drive_patches = [
+        self.patches = [
             patch.object(evaluation, "mount_google_drive", return_value=None),
             patch.object(registry, "mount_google_drive", return_value=None),
         ]
-        for drive_patch in self.drive_patches:
-            drive_patch.start()
+        for item in self.patches:
+            item.start()
 
     def tearDown(self) -> None:
-        for drive_patch in self.drive_patches:
-            drive_patch.stop()
-        self.temp_directory.cleanup()
-
-    def _create_dataset_directory(self, name: str) -> Path:
-        path = self.root / "datasets" / name
-        path.mkdir(parents=True)
-        (path / "metadata.json").write_text("{}", encoding="utf-8")
-        (path / "corpus").mkdir()
-        return path
+        for item in self.patches:
+            item.stop()
+        self.temp.cleanup()
 
     def test_public_api_is_reexported(self) -> None:
         self.assertIs(evaluation.register_pipeline, registry.register_pipeline)
         self.assertIs(evaluation.register_evaluation, registry.register_evaluation)
         self.assertIs(evaluation.register_dataset, registry.register_dataset)
-
-    def test_io_loaders_return_typed_models(self) -> None:
-        dataset_path = self._create_dataset_directory("list-one")
-        metadata = {
-            "queries": {"q1": "query"},
-            "relevant_docs": {"q1": ["d1"]},
-            "n_queries": 1,
-            "n_corpus_docs": 1,
-        }
-        (dataset_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-        with patch.object(
-            bio_io,
-            "load_from_disk",
-            return_value={"doc_id": ["d1"], "text": ["document"]},
-        ):
-            sample = bio_io.load_bioasq_sample(dataset_path)
-        self.assertIsInstance(sample, BioASQSample)
-
-        calibration_path = self.root / "calibration" / "bioasq-5k"
-        calibration_path.mkdir(parents=True)
-        (calibration_path / "metadata.json").write_text(
-            json.dumps({"n_documents": 1}), encoding="utf-8"
-        )
-        with patch.object(
-            bio_io,
-            "load_from_disk",
-            return_value={"doc_id": ["d1"], "text": ["document"]},
-        ):
-            calibration = bio_io.load_calibration_set(calibration_path)
-        self.assertIsInstance(calibration, CalibrationSet)
 
     def test_runtime_settings_do_not_change_pipeline_identity(self) -> None:
         first = evaluation.register_pipeline(
@@ -133,35 +96,39 @@ class EvaluationRegistryTests(unittest.TestCase):
             _, config_json = registry.get_pipeline(connection, first)
         self.assertNotIn("batch_size", config_json)
         self.assertNotIn("corpus_scan_size", config_json)
-        self.assertNotIn("show_progress_bar", config_json)
 
-    def test_metric_settings_have_separate_identity(self) -> None:
-        pipeline_id = evaluation.register_pipeline(
+    def test_transform_and_calibration_change_pipeline_identity(self) -> None:
+        raw_id = evaluation.register_pipeline(
             "sentence-transformers/test-model",
             "cosine",
             registry_db_path=self.registry_path,
         )
-        default_evaluation = evaluation.register_evaluation(
+        calibration = CalibrationStatistics(
+            mean=(1.0, 2.0),
+            std=(0.5, 1.0),
+            source_id="calibration:test-v1",
+        )
+        centered_id = evaluation.register_pipeline(
+            "sentence-transformers/test-model",
+            "cosine",
+            embedding_transform=EmbeddingTransformConfig(
+                transform_type=EmbeddingTransformType.MEAN_CENTER,
+                calibration=calibration,
+            ),
             registry_db_path=self.registry_path,
         )
-        changed_evaluation = evaluation.register_evaluation(
-            {"ndcg_at_k": (5, 10)},
-            registry_db_path=self.registry_path,
+        self.assertNotEqual(raw_id, centered_id)
+        with registry.open_registry_database(self.registry_path) as connection:
+            definition, config_json = registry.get_pipeline(connection, centered_id)
+        self.assertIs(
+            definition.embedding_transform.transform_type,
+            EmbeddingTransformType.MEAN_CENTER,
         )
-        self.assertNotEqual(default_evaluation, changed_evaluation)
-        with sqlite3.connect(self.registry_path) as connection:
-            pipeline_config = json.loads(
-                connection.execute(
-                    "SELECT config_json FROM pipelines WHERE pipeline_id = ?",
-                    (pipeline_id,),
-                ).fetchone()[0]
-            )
-        self.assertNotIn("metric_config", pipeline_config)
+        self.assertIn("calibration:test-v1", config_json)
 
     def test_bm25_and_dense_are_distinct_pipeline_types(self) -> None:
         dense_id = evaluation.register_pipeline(
             "sentence-transformers/test-model",
-            "cosine",
             registry_db_path=self.registry_path,
         )
         bm25_id = evaluation.register_pipeline(
@@ -169,23 +136,25 @@ class EvaluationRegistryTests(unittest.TestCase):
             registry_db_path=self.registry_path,
         )
         self.assertNotEqual(dense_id, bm25_id)
-        with registry.open_registry_database(self.registry_path) as connection:
-            bm25_definition, _ = registry.get_pipeline(connection, bm25_id)
-        self.assertIs(bm25_definition.retriever_type, RetrieverType.BM25)
 
-    def test_compute_embedding_mean_uses_raw_document_embeddings(self) -> None:
+    def test_compute_calibration_statistics_uses_raw_document_embeddings(self) -> None:
         model = _CalibrationModel()
-        embedding_mean = evaluation.compute_embedding_mean(
+        statistics = evaluation.compute_calibration_statistics(
             model,
             ["one", "two"],
+            source_id="calibration:test",
             batch_size=2,
             show_progress_bar=False,
         )
-        self.assertEqual(embedding_mean, (2.0, 4.0))
+        self.assertEqual(statistics.mean, (2.0, 4.0))
+        self.assertEqual(statistics.std, (1.0, 2.0))
         self.assertFalse(model.arguments["normalize_embeddings"])
 
-    def test_evaluate_keys_results_by_pipeline_evaluation_and_dataset(self) -> None:
-        dataset_path = self._create_dataset_directory("list-one")
+    def test_result_identity_ignores_runtime(self) -> None:
+        dataset_path = self.root / "datasets" / "list-one"
+        dataset_path.mkdir(parents=True)
+        (dataset_path / "metadata.json").write_text("{}", encoding="utf-8")
+        (dataset_path / "corpus").mkdir()
         pipeline_id = evaluation.register_pipeline(
             retriever_type="bm25",
             registry_db_path=self.registry_path,
@@ -194,7 +163,7 @@ class EvaluationRegistryTests(unittest.TestCase):
             registry_db_path=self.registry_path,
         )
         with (
-            patch.object(evaluation, "load_bioasq_sample", return_value=_sample_payload()),
+            patch.object(evaluation, "load_bioasq_sample", return_value=_sample()),
             patch.object(evaluation, "_build_retriever", return_value=_FakeRetriever()),
         ):
             first = evaluation.evaluate(

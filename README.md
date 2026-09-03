@@ -18,6 +18,7 @@ src/
   io.py                   BioASQ metadata, corpus, Drive, and persistence helpers
   sampling.py             Type filters, document filters, and sampling helpers
   dataset_builder.py      Sample construction, persistence, and registration
+  embedding_transforms.py Corpus-wide dense embedding transformations
   retrievers.py           Dense and BM25 ranking backends
   metrics.py              Backend-independent IR metrics
   evaluation_models.py    Pipeline, evaluation, runtime, dataset, and result types
@@ -32,12 +33,12 @@ TODO.md                    Planned retrieval and full-text extensions
 1. Run [`BioASQ_sample.ipynb`](notebooks/BioASQ_sample.ipynb).
 2. Adjust the sample and calibration configuration if needed.
 3. Load the shared benchmark once.
-4. Create the common 5,000-document calibration set when testing mean-centered
-   dense retrieval.
+4. Create the common 5,000-document calibration set when testing calibrated
+   dense embedding transformations.
 5. Run the creation blocks for the desired question types.
 6. Inspect examples by changing `EXAMPLE_SUBSET` and `EXAMPLE_PAGE`.
 7. Run [`Retreaval_test.ipynb`](notebooks/Retreaval_test.ipynb) to register and
-   evaluate BM25 and Qwen3-Embedding-0.6B on every latest dataset version.
+   evaluate retrieval baselines on every latest dataset version.
 8. Run [`Visualize_results.ipynb`](notebooks/Visualize_results.ipynb) to inspect
    dataset composition and compare stored pipelines by metric.
 
@@ -71,14 +72,29 @@ Configuration is split according to whether a setting can change rankings,
 changes only the reported metric set, or changes only execution behavior.
 
 `PipelineDefinition` contains ranking-relevant settings such as retriever type,
-model, similarity function, query instruction, BM25 parameters, and optional
-mean-centering data. `EvaluationDefinition` contains only metric names and
+model, similarity function, query instruction, BM25 parameters, and the dense
+embedding transformation. `EvaluationDefinition` contains only metric names and
 cutoffs. `RuntimeConfig` contains batch size, corpus scan size, progress output,
 and device.
 
+Dense retrieval follows one explicit path:
+
+```text
+raw embeddings -> embedding transform -> similarity
+```
+
+The identity transform leaves embeddings unchanged. Calibrated corpus-wide
+transforms currently include mean centering, variance normalization, and
+z-normalization. Calibration statistics are estimated dimension-wise from raw,
+non-L2-normalized calibration-document embeddings. Both `mu` and `sigma`, the
+calibration `source_id`, the transform type, and its numerical epsilon are stored
+inside the ranking-relevant pipeline configuration.
+
 This means changing GPU, batch size, or scan block size does not create a new
-pipeline. Changing NDCG or recall cutoffs creates a new evaluation identity but
-not a new retrieval pipeline. Stored result identity is:
+pipeline. Changing the embedding transform, its calibration statistics, model,
+similarity metric, or query instruction does. Changing NDCG or recall cutoffs
+creates a new evaluation identity but not a new retrieval pipeline. Stored result
+identity is:
 
 ```text
 pipeline_id + evaluation_id + dataset_id
@@ -89,6 +105,7 @@ The public API is available from `src.evaluate`:
 ```python
 from src.evaluate import (
     RuntimeConfig,
+    compute_calibration_statistics,
     evaluate,
     register_dataset,
     register_evaluation,
@@ -98,37 +115,16 @@ from src.evaluate import (
 
 ## Current baselines
 
-The retrieval notebook currently evaluates two complementary baselines.
-
-BM25 provides a lexical baseline using `rank-bm25` with tokenization kept inside
-the repository so its behavior is explicit. Qwen3-Embedding-0.6B provides the
-stronger dense baseline and uses an explicit biomedical retrieval instruction on
-the query side.
-
-```python
-bm25_pipeline_id = register_pipeline(
-    retriever_type="bm25",
-    registry_db_path=REGISTRY_DB_PATH,
-)
-
-qwen_pipeline_id = register_pipeline(
-    model_name="Qwen/Qwen3-Embedding-0.6B",
-    similarity_metric="cosine",
-    query_prompt=(
-        "Instruct: Given a biomedical question, retrieve relevant scientific "
-        "passages that answer the question\nQuery: "
-    ),
-    registry_db_path=REGISTRY_DB_PATH,
-)
-```
+The retrieval notebook currently evaluates BM25 and Qwen3-Embedding-0.6B. BM25
+provides a lexical baseline using `rank-bm25`. Qwen3 uses cosine similarity and
+an explicit biomedical retrieval instruction on the query side.
 
 Both backends are evaluated by the same in-repository metric implementation.
 The default evaluation reports MRR@10, NDCG@10, accuracy and precision/recall at
 1, 3, 5, 10, and 100, and MAP@100.
 
-Mean-centered cosine remains supported for dense retrievers through
-`embedding_mean`, but it is now an optional ranking configuration rather than
-the active default baseline.
+The planned notebook split and MiniLM embedding-space ablations are tracked in
+[`TODO.md`](TODO.md).
 
 ## Persistence
 

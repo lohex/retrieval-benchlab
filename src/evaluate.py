@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from src.embedding_transforms import CalibrationStatistics
 from src.evaluation_models import (
     BioASQSample,
     DatasetRecord,
@@ -52,11 +53,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "BioASQSample",
+    "CalibrationStatistics",
     "EvaluationOutcome",
     "EvaluationStatus",
     "RuntimeConfig",
     "SimilarityMetric",
-    "compute_embedding_mean",
+    "compute_calibration_statistics",
     "evaluate",
     "register_dataset",
     "register_evaluation",
@@ -68,16 +70,19 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def compute_embedding_mean(
+def compute_calibration_statistics(
     model: Any,
     documents: Iterable[str],
     *,
+    source_id: str,
     batch_size: int = 64,
     show_progress_bar: bool = True,
-) -> tuple[float, ...]:
-    """Encode calibration documents and return one mean per dimension."""
+) -> CalibrationStatistics:
+    """Estimate per-dimension mean and std from raw calibration document embeddings."""
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if not source_id.strip():
+        raise ValueError("source_id must not be empty")
     document_texts = [str(document).strip() for document in documents]
     if not document_texts:
         raise ValueError("documents must not be empty")
@@ -93,7 +98,7 @@ def compute_embedding_mean(
         convert_to_numpy=True,
         normalize_embeddings=False,
     )
-    embedding_matrix = np.asarray(embeddings)
+    embedding_matrix = np.asarray(embeddings, dtype=np.float64)
     valid_shape = (
         embedding_matrix.ndim == 2
         and embedding_matrix.shape[0] == len(document_texts)
@@ -103,8 +108,13 @@ def compute_embedding_mean(
         raise ValueError("Model returned an invalid calibration embedding matrix")
     if not np.isfinite(embedding_matrix).all():
         raise ValueError("Calibration embeddings contain non-finite values")
-    embedding_mean = embedding_matrix.mean(axis=0, dtype=np.float64)
-    return tuple(float(value) for value in embedding_mean)
+    mean = embedding_matrix.mean(axis=0)
+    std = embedding_matrix.std(axis=0, ddof=0)
+    return CalibrationStatistics(
+        mean=tuple(float(value) for value in mean),
+        std=tuple(float(value) for value in std),
+        source_id=source_id,
+    )
 
 
 def _max_metric_cutoff(definition: EvaluationDefinition) -> int:
@@ -134,7 +144,7 @@ def _build_retriever(
             similarity_metric=definition.similarity_metric.value,
             model_kwargs=definition.model_kwargs,
             query_prompt=definition.query_prompt,
-            embedding_mean=definition.embedding_mean,
+            embedding_transform=definition.embedding_transform,
         ),
         device=runtime.device,
         batch_size=runtime.batch_size,
