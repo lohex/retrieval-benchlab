@@ -63,13 +63,16 @@ The calibration set is stored separately below
 relevant to a complete `list`, `factoid`, or `summary` question. Its documents
 are also excluded from every sampled retrieval corpus.
 
-The notebooks can clone this public repository automatically when they run in
-Google Colab:
+## Open in Google Colab
 
+The evaluation notebooks are directly runnable from the current refactor branch. Their bootstrap cells explicitly clone and check out `refactor/split-evaluation-notebooks`, install the required Python packages, and then use the existing Google Drive paths for datasets and SQLite databases.
+
+* [Open the baseline comparison notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/refactor/split-evaluation-notebooks/notebooks/Retrieval_baselines.ipynb)
+* [Open the MiniLM embedding ablation notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/refactor/split-evaluation-notebooks/notebooks/MiniLM_embedding_ablations.ipynb)
 * [Open the sample notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/BioASQ_sample.ipynb)
-* [Open the baseline notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Retrieval_baselines.ipynb)
-* [Open the MiniLM ablation notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/MiniLM_embedding_ablations.ipynb)
 * [Open the visualization notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Visualize_results.ipynb)
+
+After this branch is merged, the two evaluation links should be changed from `refactor/split-evaluation-notebooks` to `main`.
 
 ## Retrieval, evaluation, and runtime identity
 
