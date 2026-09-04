@@ -10,7 +10,11 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from src.embedding_transforms import EmbeddingTransformConfig, transform_embeddings
+from src.embedding_transforms import (
+    EmbeddingTransformConfig,
+    EmbeddingTransformType,
+    transform_embeddings,
+)
 
 
 class RetrieverType(str, Enum):
@@ -33,8 +37,6 @@ class RetrieverType(str, Enum):
 
 
 class Retriever(Protocol):
-    """Minimal ranking interface used by the evaluator."""
-
     def rank(
         self,
         queries: Mapping[str, str],
@@ -47,19 +49,23 @@ class Retriever(Protocol):
 
 @dataclass(frozen=True)
 class DenseRetrieverConfig:
-    """Configuration that changes dense retrieval rankings."""
-
     model_name: str
     similarity_metric: str = "cosine"
     model_kwargs: dict[str, Any] | None = None
     query_prompt: str | None = None
     embedding_transform: EmbeddingTransformConfig = EmbeddingTransformConfig()
 
+    def __post_init__(self) -> None:
+        if (
+            self.embedding_transform.transform_type
+            is EmbeddingTransformType.QUERY_ADAPTED_Z
+            and self.similarity_metric != "cosine"
+        ):
+            raise ValueError("Query-adapted weighting requires cosine similarity")
+
 
 @dataclass(frozen=True)
 class BM25RetrieverConfig:
-    """Configuration that changes BM25 rankings."""
-
     k1: float = 1.5
     b: float = 0.75
 
@@ -72,8 +78,6 @@ def _tokenize(text: str) -> list[str]:
 
 
 class BM25Retriever:
-    """Simple lexical baseline backed by ``rank_bm25``."""
-
     def __init__(self, config: BM25RetrieverConfig) -> None:
         self.config = config
 
@@ -156,6 +160,13 @@ class DenseRetriever:
         norm = np.linalg.norm(embeddings, axis=1, keepdims=True)
         return embeddings / np.clip(norm, 1e-12, None)
 
+    @property
+    def _uses_query_adapted_weighting(self) -> bool:
+        return (
+            self.config.embedding_transform.transform_type
+            is EmbeddingTransformType.QUERY_ADAPTED_Z
+        )
+
     def _prepare_embeddings(
         self,
         query_embeddings: np.ndarray,
@@ -166,16 +177,31 @@ class DenseRetriever:
             corpus_embeddings,
             self.config.embedding_transform,
         )
-        if self.config.similarity_metric == "cosine":
+        if self.config.similarity_metric == "cosine" and not self._uses_query_adapted_weighting:
             query_embeddings = self._l2_normalize(query_embeddings)
             corpus_embeddings = self._l2_normalize(corpus_embeddings)
         return query_embeddings, corpus_embeddings
+
+    def _weighted_cosine_block(
+        self,
+        query_embeddings: np.ndarray,
+        corpus_embeddings: np.ndarray,
+    ) -> np.ndarray:
+        alpha = self.config.embedding_transform.alpha
+        weights = np.abs(query_embeddings) ** np.float32(alpha)
+        numerator = (query_embeddings * weights) @ corpus_embeddings.T
+        query_norm = np.sqrt(np.sum(weights * query_embeddings**2, axis=1))
+        corpus_norm = np.sqrt(weights @ (corpus_embeddings**2).T)
+        denominator = query_norm[:, None] * corpus_norm
+        return numerator / np.clip(denominator, 1e-12, None)
 
     def _score_block(
         self,
         query_embeddings: np.ndarray,
         corpus_embeddings: np.ndarray,
     ) -> np.ndarray:
+        if self._uses_query_adapted_weighting:
+            return self._weighted_cosine_block(query_embeddings, corpus_embeddings)
         if self.config.similarity_metric == "euclidean":
             return -np.linalg.norm(
                 query_embeddings[:, None, :] - corpus_embeddings[None, :, :],

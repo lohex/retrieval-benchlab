@@ -11,21 +11,22 @@ gold documents.
 
 ```text
 notebooks/
-  BioASQ_sample.ipynb     Create, validate, inspect, and save filtered subsets
-  Retreaval_test.ipynb    Register and evaluate retrieval baselines
-  Visualize_results.ipynb Analyze datasets and compare registered pipelines
+  BioASQ_sample.ipynb              Create, validate, inspect, and save filtered subsets
+  Retrieval_baselines.ipynb        Compare BM25, MiniLM, and Qwen3 baselines
+  MiniLM_embedding_ablations.ipynb Compare calibrated and query-adapted MiniLM scoring
+  Visualize_results.ipynb          Analyze datasets and compare registered pipelines
 src/
-  io.py                   BioASQ metadata, corpus, Drive, and persistence helpers
-  sampling.py             Type filters, document filters, and sampling helpers
-  dataset_builder.py      Sample construction, persistence, and registration
-  embedding_transforms.py Corpus-wide dense embedding transformations
-  retrievers.py           Dense and BM25 ranking backends
-  metrics.py              Backend-independent IR metrics
-  evaluation_models.py    Pipeline, evaluation, runtime, dataset, and result types
-  evaluation_registry.py  Append-only SQLite registry and result persistence
-  evaluate.py             Shared retrieval evaluation orchestration
-  reporting.py            Read-only dataset and pipeline report tables
-TODO.md                    Planned retrieval and full-text extensions
+  io.py                            BioASQ metadata, corpus, Drive, and persistence helpers
+  sampling.py                      Type filters, document filters, and sampling helpers
+  dataset_builder.py               Sample construction, persistence, and registration
+  embedding_transforms.py          Dense embedding transformation configuration
+  retrievers.py                    Dense and BM25 ranking backends
+  metrics.py                       Backend-independent IR metrics
+  evaluation_models.py             Pipeline, evaluation, runtime, dataset, and result types
+  evaluation_registry.py           Append-only SQLite registry and result persistence
+  evaluate.py                      Shared retrieval evaluation orchestration
+  reporting.py                     Read-only dataset and pipeline report tables
+TODO.md                             Planned retrieval and full-text extensions
 ```
 
 ## Workflow
@@ -37,12 +38,15 @@ TODO.md                    Planned retrieval and full-text extensions
    dense embedding transformations.
 5. Run the creation blocks for the desired question types.
 6. Inspect examples by changing `EXAMPLE_SUBSET` and `EXAMPLE_PAGE`.
-7. Run [`Retreaval_test.ipynb`](notebooks/Retreaval_test.ipynb) to register and
-   evaluate retrieval baselines on every latest dataset version.
-8. Run [`Visualize_results.ipynb`](notebooks/Visualize_results.ipynb) to inspect
+7. Run [`Retrieval_baselines.ipynb`](notebooks/Retrieval_baselines.ipynb) for the
+   unmodified BM25, MiniLM, and Qwen3 comparison.
+8. Run [`MiniLM_embedding_ablations.ipynb`](notebooks/MiniLM_embedding_ablations.ipynb)
+   for MiniLM mean-centering, variance normalization, z-normalization, and
+   query-adapted weighted cosine.
+9. Run [`Visualize_results.ipynb`](notebooks/Visualize_results.ipynb) to inspect
    dataset composition and compare stored pipelines by metric.
 
-The sample notebook supports these six stored subsets:
+The sample notebook supports six stored subsets:
 
 | Question type | One gold document | Multiple gold documents |
 |---|---|---|
@@ -59,12 +63,16 @@ The calibration set is stored separately below
 relevant to a complete `list`, `factoid`, or `summary` question. Its documents
 are also excluded from every sampled retrieval corpus.
 
-The notebooks can clone this public repository automatically when they run in
-Google Colab:
+## Open in Google Colab
 
+The evaluation notebooks are directly runnable from the current refactor branch. Their bootstrap cells explicitly clone and check out `refactor/split-evaluation-notebooks`, install the required Python packages, and then use the existing Google Drive paths for datasets and SQLite databases.
+
+* [Open the baseline comparison notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/refactor/split-evaluation-notebooks/notebooks/Retrieval_baselines.ipynb)
+* [Open the MiniLM embedding ablation notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/refactor/split-evaluation-notebooks/notebooks/MiniLM_embedding_ablations.ipynb)
 * [Open the sample notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/BioASQ_sample.ipynb)
-* [Open the retrieval notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Retreaval_test.ipynb)
 * [Open the visualization notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Visualize_results.ipynb)
+
+After this branch is merged, the two evaluation links should be changed from `refactor/split-evaluation-notebooks` to `main`.
 
 ## Retrieval, evaluation, and runtime identity
 
@@ -72,29 +80,32 @@ Configuration is split according to whether a setting can change rankings,
 changes only the reported metric set, or changes only execution behavior.
 
 `PipelineDefinition` contains ranking-relevant settings such as retriever type,
-model, similarity function, query instruction, BM25 parameters, and the dense
-embedding transformation. `EvaluationDefinition` contains only metric names and
-cutoffs. `RuntimeConfig` contains batch size, corpus scan size, progress output,
-and device.
+model, similarity function, query instruction, BM25 parameters, and dense
+embedding transformation/scoring configuration. `EvaluationDefinition` contains
+only metric names and cutoffs. `RuntimeConfig` contains batch size, corpus scan
+size, progress output, and device.
 
-Dense retrieval follows one explicit path:
+Dense retrieval follows an explicit path:
 
 ```text
-raw embeddings -> embedding transform -> similarity
+raw embeddings -> embedding transform -> similarity/scoring
 ```
 
-The identity transform leaves embeddings unchanged. Calibrated corpus-wide
-transforms currently include mean centering, variance normalization, and
-z-normalization. Calibration statistics are estimated dimension-wise from raw,
-non-L2-normalized calibration-document embeddings. Both `mu` and `sigma`, the
-calibration `source_id`, the transform type, and its numerical epsilon are stored
-inside the ranking-relevant pipeline configuration.
+The identity transform leaves embeddings unchanged. Calibrated transforms
+include mean centering, variance normalization, and z-normalization. Calibration
+statistics are estimated dimension-wise from raw, non-L2-normalized calibration
+document embeddings. `mu`, `sigma`, calibration `source_id`, transform type, and
+numerical parameters are stored in the ranking-relevant pipeline configuration.
 
-This means changing GPU, batch size, or scan block size does not create a new
-pipeline. Changing the embedding transform, its calibration statistics, model,
-similarity metric, or query instruction does. Changing NDCG or recall cutoffs
-creates a new evaluation identity but not a new retrieval pipeline. Stored result
-identity is:
+Query-adapted MiniLM scoring starts from z-normalized embeddings and uses
+`w_k = |z_q,k|^alpha` inside weighted cosine. `alpha` is part of pipeline
+identity. `alpha = 0` reduces to standard cosine in the z-normalized space.
+
+Changing GPU, batch size, or scan block size does not create a new pipeline.
+Changing the embedding transform, calibration statistics, query-adaptation
+parameter, model, similarity metric, or query instruction does. Changing metric
+cutoffs creates a new evaluation identity but not a new retrieval pipeline.
+Stored result identity is:
 
 ```text
 pipeline_id + evaluation_id + dataset_id
@@ -113,18 +124,18 @@ from src.evaluate import (
 )
 ```
 
-## Current baselines
+## Current baseline comparison
 
-The retrieval notebook currently evaluates BM25 and Qwen3-Embedding-0.6B. BM25
-provides a lexical baseline using `rank-bm25`. Qwen3 uses cosine similarity and
-an explicit biomedical retrieval instruction on the query side.
+`Retrieval_baselines.ipynb` compares three complementary baselines without
+embedding post-processing:
 
-Both backends are evaluated by the same in-repository metric implementation.
-The default evaluation reports MRR@10, NDCG@10, accuracy and precision/recall at
-1, 3, 5, 10, and 100, and MAP@100.
+- BM25
+- `sentence-transformers/all-MiniLM-L6-v2` with cosine similarity
+- `Qwen/Qwen3-Embedding-0.6B` with cosine similarity and a biomedical query instruction
 
-The planned notebook split and MiniLM embedding-space ablations are tracked in
-[`TODO.md`](TODO.md).
+All backends use the same in-repository metric implementation. The default
+evaluation reports MRR@10, NDCG@10, accuracy and precision/recall at 1, 3, 5,
+10, and 100, and MAP@100.
 
 ## Persistence
 
