@@ -120,19 +120,29 @@ class DenseRetriever:
         self.batch_size = batch_size
         self.corpus_scan_size = corpus_scan_size
         self.show_progress_bar = show_progress_bar
+
+        constructor_kwargs = dict(config.model_kwargs or {})
+        max_seq_length = constructor_kwargs.pop("max_seq_length", None)
         self.model = SentenceTransformer(
             config.model_name,
             device=device,
-            **(config.model_kwargs or {}),
+            **constructor_kwargs,
         )
+        if max_seq_length is not None:
+            resolved_max_seq_length = int(max_seq_length)
+            if resolved_max_seq_length <= 0:
+                raise ValueError("model_kwargs['max_seq_length'] must be positive")
+            self.model.max_seq_length = resolved_max_seq_length
 
     def _encode_queries(self, texts: Sequence[str]) -> np.ndarray:
-        encode_query = getattr(self.model, "encode_query", self.model.encode)
         prepared = list(texts)
         if self.config.query_prompt:
             prepared = [f"{self.config.query_prompt}{text}" for text in prepared]
+            encode_queries = self.model.encode
+        else:
+            encode_queries = getattr(self.model, "encode_query", self.model.encode)
         return np.asarray(
-            encode_query(
+            encode_queries(
                 prepared,
                 batch_size=self.batch_size,
                 show_progress_bar=self.show_progress_bar,
