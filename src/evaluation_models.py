@@ -91,6 +91,7 @@ class PipelineDefinition:
     similarity_metric: SimilarityMetric | None = None
     model_kwargs: dict[str, Any] | None = None
     query_prompt: str | None = None
+    max_seq_length: int | None = None
     embedding_transform: EmbeddingTransformConfig = EmbeddingTransformConfig()
     bm25_k1: float = 1.5
     bm25_b: float = 0.75
@@ -108,6 +109,7 @@ class PipelineDefinition:
                     ),
                     "model_kwargs": self.model_kwargs or {},
                     "query_prompt": self.query_prompt,
+                    "max_seq_length": self.max_seq_length,
                     "embedding_transform": self.embedding_transform.to_dict(),
                 }
             )
@@ -124,6 +126,7 @@ class PipelineDefinition:
                 bm25_k1=float(value["bm25_k1"]),
                 bm25_b=float(value["bm25_b"]),
             )
+        max_seq_length = value.get("max_seq_length")
         return cls(
             retriever_type=retriever_type,
             model_name=str(value["model_name"]),
@@ -133,6 +136,9 @@ class PipelineDefinition:
                 str(value["query_prompt"])
                 if value["query_prompt"] is not None
                 else None
+            ),
+            max_seq_length=(
+                int(max_seq_length) if max_seq_length is not None else None
             ),
             embedding_transform=EmbeddingTransformConfig.from_dict(
                 dict(value["embedding_transform"])
