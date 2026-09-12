@@ -12,6 +12,7 @@ gold documents.
 ```text
 notebooks/
   BioASQ_sample.ipynb              Create, validate, inspect, and save filtered subsets
+  BioASQ_PMC_OA_coverage.ipynb     Measure gold PMID coverage in PMC and PMC Open Access
   Retrieval_baselines.ipynb        Compare BM25, MiniLM, and Qwen3 baselines
   MiniLM_embedding_ablations.ipynb Compare calibrated and query-adapted MiniLM scoring
   Visualize_results.ipynb          Analyze datasets and compare registered pipelines
@@ -45,6 +46,9 @@ TODO.md                             Planned retrieval and full-text extensions
    query-adapted weighted cosine.
 9. Run [`Visualize_results.ipynb`](notebooks/Visualize_results.ipynb) to inspect
    dataset composition and compare stored pipelines by metric.
+10. Run [`BioASQ_PMC_OA_coverage.ipynb`](notebooks/BioASQ_PMC_OA_coverage.ipynb)
+    to estimate how many BioASQ gold PubMed documents can be mapped to PMC and
+    the PMC Open Access subset for a future full-text benchmark.
 
 The sample notebook supports six stored subsets:
 
@@ -70,6 +74,7 @@ The notebooks clone the current `main` branch automatically, install their requi
 * [Open the baseline comparison notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Retrieval_baselines.ipynb)
 * [Open the MiniLM embedding ablation notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/MiniLM_embedding_ablations.ipynb)
 * [Open the sample notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/BioASQ_sample.ipynb)
+* [Open the BioASQ PMC-OA coverage notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/BioASQ_PMC_OA_coverage.ipynb)
 * [Open the visualization notebook in Colab](https://colab.research.google.com/github/lohex/retrieval-benchlab/blob/main/notebooks/Visualize_results.ipynb)
 
 ## Retrieval, evaluation, and runtime identity
