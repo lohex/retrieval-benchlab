@@ -97,6 +97,19 @@ def _enrich_dataset_statistics(datasets: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame.from_records(records)
 
 
+def _is_legacy_qwen_pipeline(row: pd.Series) -> bool:
+    if str(row["model_name"]) != "Qwen/Qwen3-Embedding-0.6B":
+        return False
+    try:
+        config = json.loads(str(row["config_json"]))
+    except (TypeError, ValueError) as error:
+        raise ReportingError(
+            f"Invalid pipeline config JSON for {row['pipeline_id']}"
+        ) from error
+    model_kwargs = config.get("model_kwargs", {})
+    return model_kwargs.get("max_seq_length") != 512
+
+
 def _registered_pipelines(registry_path: Path) -> pd.DataFrame:
     pipelines = _read_query(
         registry_path,
@@ -107,6 +120,12 @@ def _registered_pipelines(registry_path: Path) -> pd.DataFrame:
     )
     if pipelines.empty:
         raise ReportingError("The dataset registry contains no pipelines")
+
+    legacy_qwen_mask = pipelines.apply(_is_legacy_qwen_pipeline, axis=1)
+    pipelines = pipelines.loc[~legacy_qwen_mask].copy()
+    if pipelines.empty:
+        raise ReportingError("No reportable pipelines remain after filtering")
+
     model_short_names = pipelines["model_name"].str.rsplit("/", n=1).str[-1]
     pipeline_suffixes = pipelines["pipeline_id"].str[-6:]
     pipelines["pipeline_label"] = (
